@@ -10,8 +10,8 @@ class DetectionProvider extends ChangeNotifier {
   DetectionProvider({
     required ModelService modelService,
     required ImageService imageService,
-  })  : _modelService = modelService,
-        _imageService = imageService;
+  }) : _modelService = modelService,
+       _imageService = imageService;
 
   final ModelService _modelService;
   final ImageService _imageService;
@@ -32,6 +32,8 @@ class DetectionProvider extends ChangeNotifier {
 
   String? get errorMessage => _errorMessage;
   String get recommendation => _recommendation;
+
+  ModelService get modelService => _modelService;
 
   File? get selectedImage => _selectedImage;
   List<Detection> get detections => _detections;

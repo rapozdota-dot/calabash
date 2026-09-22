@@ -69,74 +69,90 @@ class ModelService {
   }
 
   Future<List<Detection>> detectFruits(File imageFile) async {
+    final decodedImage = await _decodeImageFile(imageFile);
+    return detectFruitsFromImage(decodedImage);
+  }
+
+  Future<List<Detection>> detectFruitsFromImage(img.Image image) async {
     await loadModel();
 
     if (_interpreter == null) {
       throw StateError('TensorFlow Lite model is not available.');
     }
     if (_detectionOutputIndex == null || _protoOutputIndex == null) {
-      throw StateError('Model outputs do not match YOLOv8 segmentation tensors.');
+      throw StateError(
+        'Model outputs do not match YOLOv8 segmentation tensors.',
+      );
     }
 
     try {
-      final preprocessed = await _preprocessImage(imageFile);
-      final outputs = _prepareOutputBuffers();
-      _interpreter!.runForMultipleInputs([preprocessed.inputTensor], outputs.rawOutputs);
-
-      final detectionChannels = _extractDetectionChannels(
-        outputs.rawOutputs[_detectionOutputIndex]!,
-      );
-      final candidates = _parseSegmentationCandidates(
-        detectionChannels: detectionChannels,
-        metadata: preprocessed.metadata,
-      );
-      final nmsCandidates = _applyClassAwareNms(candidates);
-
-      var finalCandidates = nmsCandidates;
-      try {
-        final protoTensor = _extractProtoTensor(
-          outputs.rawOutputs[_protoOutputIndex]!,
-        );
-        finalCandidates = _attachMasksAndFilterCandidates(
-          candidates: nmsCandidates,
-          protoTensor: protoTensor,
-          metadata: preprocessed.metadata,
-        );
-      } catch (error) {
-        if (kDebugMode) {
-          debugPrint('Mask filtering skipped. Error: $error');
-        }
-      }
-
-      final detections = finalCandidates
-          .map((candidate) => candidate.toDetection(preprocessed.metadata))
-          .toList(growable: false);
-
-      if (kDebugMode) {
-        debugPrint(
-          'Postprocess summary: parsed=${candidates.length} '
-          'afterNms=${nmsCandidates.length} final=${detections.length}',
-        );
-        _logDetectionPreview(
-          detections: detections,
-          label: 'Top detections after NMS/mask filter',
-        );
-      }
-
-      return detections;
+      return _detectFruitsFromDecodedImage(image);
     } catch (error) {
       debugPrint('Inference failed. Error: $error');
       rethrow;
     }
   }
 
-  Future<_PreprocessedImage> _preprocessImage(File imageFile) async {
+  Future<img.Image> _decodeImageFile(File imageFile) async {
     final imageBytes = await imageFile.readAsBytes();
     final decodedImage = img.decodeImage(imageBytes);
     if (decodedImage == null) {
       throw StateError('Unable to decode image for inference.');
     }
+    return decodedImage;
+  }
 
+  List<Detection> _detectFruitsFromDecodedImage(img.Image decodedImage) {
+    final preprocessed = _preprocessImage(decodedImage);
+    final outputs = _prepareOutputBuffers();
+    _interpreter!.runForMultipleInputs([
+      preprocessed.inputTensor,
+    ], outputs.rawOutputs);
+
+    final detectionChannels = _extractDetectionChannels(
+      outputs.rawOutputs[_detectionOutputIndex]!,
+    );
+    final candidates = _parseSegmentationCandidates(
+      detectionChannels: detectionChannels,
+      metadata: preprocessed.metadata,
+    );
+    final nmsCandidates = _applyClassAwareNms(candidates);
+
+    var finalCandidates = nmsCandidates;
+    try {
+      final protoTensor = _extractProtoTensor(
+        outputs.rawOutputs[_protoOutputIndex]!,
+      );
+      finalCandidates = _attachMasksAndFilterCandidates(
+        candidates: nmsCandidates,
+        protoTensor: protoTensor,
+        metadata: preprocessed.metadata,
+      );
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('Mask filtering skipped. Error: $error');
+      }
+    }
+
+    final detections = finalCandidates
+        .map((candidate) => candidate.toDetection(preprocessed.metadata))
+        .toList(growable: false);
+
+    if (kDebugMode) {
+      debugPrint(
+        'Postprocess summary: parsed=${candidates.length} '
+        'afterNms=${nmsCandidates.length} final=${detections.length}',
+      );
+      _logDetectionPreview(
+        detections: detections,
+        label: 'Top detections after NMS/mask filter',
+      );
+    }
+
+    return detections;
+  }
+
+  _PreprocessedImage _preprocessImage(img.Image decodedImage) {
     final originalWidth = decodedImage.width;
     final originalHeight = decodedImage.height;
     final inputSize = AppConstants.modelInputSize;
@@ -241,7 +257,9 @@ class ModelService {
   List<List<dynamic>> _extractDetectionChannels(Object rawDetection) {
     final detectionBatch = _asList(rawDetection, 'Detection tensor');
     if (detectionBatch.length != 1) {
-      throw StateError('Detection tensor batch mismatch: ${detectionBatch.length}');
+      throw StateError(
+        'Detection tensor batch mismatch: ${detectionBatch.length}',
+      );
     }
 
     final channels = _asList(detectionBatch.first, 'Detection tensor channels');
@@ -252,20 +270,16 @@ class ModelService {
       );
     }
 
-    return List<List<dynamic>>.generate(
-      _detectionChannelCount,
-      (index) {
-        final values = _asList(channels[index], 'Detection channel $index');
-        if (values.length != _candidateCount) {
-          throw StateError(
-            'Detection channel $index length mismatch: ${values.length} '
-            'expected $_candidateCount',
-          );
-        }
-        return values;
-      },
-      growable: false,
-    );
+    return List<List<dynamic>>.generate(_detectionChannelCount, (index) {
+      final values = _asList(channels[index], 'Detection channel $index');
+      if (values.length != _candidateCount) {
+        throw StateError(
+          'Detection channel $index length mismatch: ${values.length} '
+          'expected $_candidateCount',
+        );
+      }
+      return values;
+    }, growable: false);
   }
 
   List<_SegmentationCandidate> _parseSegmentationCandidates({
@@ -325,8 +339,10 @@ class ModelService {
 
       final maskCoefficients = Float32List(_maskChannelCount);
       for (var maskIndex = 0; maskIndex < _maskChannelCount; maskIndex++) {
-        maskCoefficients[maskIndex] =
-            _valueAt(detectionChannels[4 + _classCount + maskIndex], anchor);
+        maskCoefficients[maskIndex] = _valueAt(
+          detectionChannels[4 + _classCount + maskIndex],
+          anchor,
+        );
       }
 
       final candidate = _SegmentationCandidate(
@@ -485,9 +501,7 @@ class ModelService {
     }
 
     if (kDebugMode) {
-      debugPrint(
-        'Mask filter kept=${kept.length} dropped=$droppedByMask',
-      );
+      debugPrint('Mask filter kept=${kept.length} dropped=$droppedByMask');
     }
 
     return kept;
@@ -599,7 +613,9 @@ class ModelService {
       );
     }
 
-    final protoTensor = Float32List(_maskChannelCount * _protoHeight * _protoWidth);
+    final protoTensor = Float32List(
+      _maskChannelCount * _protoHeight * _protoWidth,
+    );
     for (var y = 0; y < _protoHeight; y++) {
       final row = _asList(rows[y], 'Prototype row $y');
       if (row.length != _protoWidth) {
@@ -619,7 +635,8 @@ class ModelService {
         }
 
         for (var channel = 0; channel < _maskChannelCount; channel++) {
-          final index = (channel * _protoHeight * _protoWidth) + (y * _protoWidth) + x;
+          final index =
+              (channel * _protoHeight * _protoWidth) + (y * _protoWidth) + x;
           protoTensor[index] = _toDouble(channels[channel]);
         }
       }
@@ -707,7 +724,9 @@ class ModelService {
 
     final inputTensors = _interpreter!.getInputTensors();
     if (inputTensors.length != 1) {
-      throw StateError('Expected 1 input tensor, found ${inputTensors.length}.');
+      throw StateError(
+        'Expected 1 input tensor, found ${inputTensors.length}.',
+      );
     }
 
     final inputTensor = inputTensors.first;
@@ -793,7 +812,11 @@ class ModelService {
       'Input tensor: name=${inputTensor.name} '
       'shape=${inputTensor.shape} type=${inputTensor.type}',
     );
-    for (var index = 0; index < _interpreter!.getOutputTensors().length; index++) {
+    for (
+      var index = 0;
+      index < _interpreter!.getOutputTensors().length;
+      index++
+    ) {
       final outputTensor = _interpreter!.getOutputTensor(index);
       debugPrint(
         'Output tensor $index: name=${outputTensor.name} '
@@ -823,17 +846,23 @@ class ModelService {
       return;
     }
 
-    final preview = detections.take(_debugLogCount).map((detection) {
-      final box = detection.boundingBox;
-      return '${detection.maturityClass.label} '
-          '${detection.confidence.toStringAsFixed(3)} '
-          'box=[${box.left.toStringAsFixed(3)},${box.top.toStringAsFixed(3)},'
-          '${box.width.toStringAsFixed(3)},${box.height.toStringAsFixed(3)}]';
-    }).join(' | ');
+    final preview = detections
+        .take(_debugLogCount)
+        .map((detection) {
+          final box = detection.boundingBox;
+          return '${detection.maturityClass.label} '
+              '${detection.confidence.toStringAsFixed(3)} '
+              'box=[${box.left.toStringAsFixed(3)},${box.top.toStringAsFixed(3)},'
+              '${box.width.toStringAsFixed(3)},${box.height.toStringAsFixed(3)}]';
+        })
+        .join(' | ');
     debugPrint('$label: $preview');
   }
 
-  void _pushDebugCandidate(List<_DebugCandidate> bucket, _DebugCandidate candidate) {
+  void _pushDebugCandidate(
+    List<_DebugCandidate> bucket,
+    _DebugCandidate candidate,
+  ) {
     bucket.add(candidate);
     bucket.sort((a, b) => a.confidence.compareTo(b.confidence));
     if (bucket.length > _debugLogCount) {
@@ -919,10 +948,7 @@ class ModelService {
 }
 
 class _PreprocessedImage {
-  const _PreprocessedImage({
-    required this.inputTensor,
-    required this.metadata,
-  });
+  const _PreprocessedImage({required this.inputTensor, required this.metadata});
 
   final Object inputTensor;
   final _PreprocessMetadata metadata;
@@ -945,10 +971,7 @@ class _PreprocessMetadata {
 }
 
 class _PreparedOutputs {
-  const _PreparedOutputs({
-    required this.rawOutputs,
-    required this.shapes,
-  });
+  const _PreparedOutputs({required this.rawOutputs, required this.shapes});
 
   final Map<int, Object> rawOutputs;
   final Map<int, List<int>> shapes;
@@ -971,9 +994,7 @@ class _SegmentationCandidate {
   final Float32List maskCoefficients;
   final SegmentationMask? visualMask;
 
-  _SegmentationCandidate copyWith({
-    SegmentationMask? visualMask,
-  }) {
+  _SegmentationCandidate copyWith({SegmentationMask? visualMask}) {
     return _SegmentationCandidate(
       modelSpaceBox: modelSpaceBox,
       originalSpaceBox: originalSpaceBox,
@@ -1025,4 +1046,3 @@ class _DebugCandidate {
   final int classIndex;
   final double confidence;
 }
-

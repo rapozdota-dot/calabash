@@ -10,6 +10,9 @@ class DetectionBox extends StatelessWidget {
     required this.imageHeight,
     this.offsetX = 0,
     this.offsetY = 0,
+    this.label,
+    this.subtitle,
+    this.colorOverride,
   });
 
   final Detection detection;
@@ -18,11 +21,15 @@ class DetectionBox extends StatelessWidget {
   final double imageHeight;
   final double offsetX;
   final double offsetY;
+  final String? label;
+  final String? subtitle;
+  final Color? colorOverride;
 
   @override
   Widget build(BuildContext context) {
-    final color = detection.maturityClass.color;
+    final color = colorOverride ?? detection.maturityClass.color;
     final labelBounds = _labelBounds;
+    final subtitleText = subtitle;
 
     if (labelBounds.width <= 0 || labelBounds.height <= 0) {
       return const SizedBox.shrink();
@@ -49,7 +56,10 @@ class DetectionBox extends StatelessWidget {
               top: labelBounds.top,
               child: ConstrainedBox(
                 constraints: BoxConstraints(
-                  maxWidth: (imageWidth - labelBounds.left - 8).clamp(92.0, 190.0),
+                  maxWidth: (imageWidth - labelBounds.left - 8).clamp(
+                    92.0,
+                    220.0,
+                  ),
                 ),
                 child: DecoratedBox(
                   decoration: BoxDecoration(
@@ -64,16 +74,39 @@ class DetectionBox extends StatelessWidget {
                     ],
                   ),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                    child: Text(
-                      '#$fruitNumber ${detection.maturityClass.label} ${(detection.confidence * 100).toStringAsFixed(0)}%',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w900,
-                      ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 5,
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          label ??
+                              '#$fruitNumber ${detection.maturityClass.label} ${(detection.confidence * 100).toStringAsFixed(0)}%',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        if (subtitleText != null) ...[
+                          const SizedBox(height: 1),
+                          Text(
+                            subtitleText,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.86),
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                 ),
@@ -101,10 +134,7 @@ class DetectionBox extends StatelessWidget {
 }
 
 class _DetectionMaskPainter extends CustomPainter {
-  const _DetectionMaskPainter({
-    required this.detection,
-    required this.color,
-  });
+  const _DetectionMaskPainter({required this.detection, required this.color});
 
   final Detection detection;
   final Color color;

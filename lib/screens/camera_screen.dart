@@ -1,4 +1,5 @@
 import 'package:calabash_maturity_detection/providers/detection_provider.dart';
+import 'package:calabash_maturity_detection/screens/live_camera_screen.dart';
 import 'package:calabash_maturity_detection/screens/result_screen.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:calabash_maturity_detection/utils/navigation.dart';
@@ -26,9 +27,13 @@ class CameraScreen extends StatelessWidget {
                   ElevatedButton.icon(
                     onPressed: provider.isBusy
                         ? null
-                        : () => _scan(context, provider, ImageSource.camera),
-                    icon: const Icon(Icons.photo_camera_rounded),
-                    label: const Text('Use Camera'),
+                        : () {
+                            Navigator.of(
+                              context,
+                            ).push(fadeRoute(const LiveCameraScreen()));
+                          },
+                    icon: const Icon(Icons.videocam_rounded),
+                    label: const Text('Live Capture'),
                   ),
                   const SizedBox(height: 10),
                   OutlinedButton.icon(
@@ -81,25 +86,29 @@ class _ScanPanel extends StatelessWidget {
       child: Column(
         children: [
           Icon(
-            isBusy ? Icons.analytics_rounded : Icons.center_focus_strong_rounded,
+            isBusy
+                ? Icons.analytics_rounded
+                : Icons.center_focus_strong_rounded,
             size: 52,
             color: AppConstants.primaryGreen,
           ),
           const SizedBox(height: 12),
           Text(
-            isBusy ? 'Analyzing fruit maturity...' : 'Capture a clear calabash image',
+            isBusy
+                ? 'Analyzing fruit maturity...'
+                : 'Start live detection or choose an image',
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w900,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 6),
           Text(
             'Use good lighting and keep the fruit visible inside the frame.',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Colors.black.withValues(alpha: 0.60),
-                ),
+              color: Colors.black.withValues(alpha: 0.60),
+            ),
           ),
           if (isBusy) ...[
             const SizedBox(height: 16),
