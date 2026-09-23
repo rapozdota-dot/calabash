@@ -41,14 +41,63 @@ class ModelPipelineTimings {
   final int totalMicros;
 }
 
+enum TfliteBackendKind { cpu, xnnpack, nnapi, gpu }
+
+class TfliteBackendConfig {
+  const TfliteBackendConfig({
+    required this.kind,
+    required this.label,
+    required this.threads,
+  });
+
+  final TfliteBackendKind kind;
+  final String label;
+  final int threads;
+
+  String get cacheKey => '${kind.name}:$threads';
+
+  bool get isAndroidOnly =>
+      kind == TfliteBackendKind.gpu || kind == TfliteBackendKind.nnapi;
+
+  static const cpu2 = TfliteBackendConfig(
+    kind: TfliteBackendKind.cpu,
+    label: 'CPU',
+    threads: 2,
+  );
+}
+
+class TfliteBackendBenchmark {
+  const TfliteBackendBenchmark({
+    required this.config,
+    required this.initialized,
+    required this.warmupMicros,
+    required this.averageMicros,
+    required this.minMicros,
+    required this.maxMicros,
+    this.errorMessage,
+  });
+
+  final TfliteBackendConfig config;
+  final bool initialized;
+  final int warmupMicros;
+  final int averageMicros;
+  final int minMicros;
+  final int maxMicros;
+  final String? errorMessage;
+}
+
 class ModelService {
   static const int _classCount = 3;
   static const int _maskChannelCount = 32;
   static const int _candidateCount = 8400;
   static const int _protoHeight = 160;
   static const int _protoWidth = 160;
+  static const int _protoPlaneSize = _protoHeight * _protoWidth;
   static const int _debugLogCount = 5;
   static const int _detectionChannelCount = 4 + _classCount + _maskChannelCount;
+  static const int _inputTensorElementCount =
+      AppConstants.modelInputSize * AppConstants.modelInputSize * 3;
+  static const double _letterboxFillValue = 114.0 / 255.0;
   static const bool _enableVerboseModelLogs = false;
 
   static const List<int> _expectedInputShape = [
@@ -69,13 +118,25 @@ class ModelService {
     _maskChannelCount,
   ];
 
+  ModelService({
+    Uint8List? modelBuffer,
+    TfliteBackendConfig backendConfig = TfliteBackendConfig.cpu2,
+  }) : _modelBuffer = modelBuffer,
+       _backendConfig = backendConfig;
+
+  final Uint8List? _modelBuffer;
+  final TfliteBackendConfig _backendConfig;
+
   Interpreter? _interpreter;
+  Delegate? _delegate;
   bool _isLoadingModel = false;
   bool _didLogTensorShapes = false;
   int? _detectionOutputIndex;
   int? _protoOutputIndex;
+  _ModelTensorWorkspace? _tensorWorkspace;
 
   bool get isModelReady => _interpreter != null;
+  TfliteBackendConfig get backendConfig => _backendConfig;
   bool get _shouldVerboseLog => kDebugMode && _enableVerboseModelLogs;
 
   Future<void> loadModel() async {
@@ -86,14 +147,15 @@ class ModelService {
     _isLoadingModel = true;
 
     try {
-      final options = InterpreterOptions()..threads = 2;
-      _interpreter = await Interpreter.fromAsset(
-        AppConstants.modelAssetPath,
-        options: options,
-      );
+      final runtime = await _createInterpreter();
+      _interpreter = runtime.interpreter;
+      _delegate = runtime.delegate;
       _validateModelSignature();
       _logTensorShapes();
-      debugPrint('TFLite segmentation model loaded successfully.');
+      debugPrint(
+        'TFLite segmentation model loaded successfully '
+        '(${_backendConfig.label}, threads=${_backendConfig.threads}).',
+      );
     } catch (error) {
       debugPrint('Model loading failed. Error: $error');
       _interpreter = null;
@@ -101,6 +163,87 @@ class ModelService {
     } finally {
       _isLoadingModel = false;
     }
+  }
+
+  Future<_InterpreterRuntime> _createInterpreter() async {
+    final options = InterpreterOptions()..threads = _backendConfig.threads;
+    Delegate? delegate;
+
+    try {
+      delegate = _createDelegateFor(_backendConfig, options);
+      final modelBuffer = _modelBuffer;
+      final interpreter = modelBuffer == null
+          ? await Interpreter.fromAsset(
+              AppConstants.modelAssetPath,
+              options: options,
+            )
+          : Interpreter.fromBuffer(modelBuffer, options: options);
+      options.delete();
+      return _InterpreterRuntime(interpreter: interpreter, delegate: delegate);
+    } catch (_) {
+      options.delete();
+      delegate?.delete();
+      rethrow;
+    }
+  }
+
+  Delegate? _createDelegateFor(
+    TfliteBackendConfig config,
+    InterpreterOptions options,
+  ) {
+    switch (config.kind) {
+      case TfliteBackendKind.cpu:
+        return null;
+      case TfliteBackendKind.nnapi:
+        options.useNnApiForAndroid = true;
+        return null;
+      case TfliteBackendKind.xnnpack:
+        final delegateOptions = XNNPackDelegateOptions(
+          numThreads: config.threads,
+        );
+        final delegate = XNNPackDelegate(options: delegateOptions);
+        delegateOptions.delete();
+        options.addDelegate(delegate);
+        return delegate;
+      case TfliteBackendKind.gpu:
+        final delegate = GpuDelegateV2();
+        options.addDelegate(delegate);
+        return delegate;
+    }
+  }
+
+  Future<TfliteBackendBenchmark> benchmarkInference({
+    int warmupRuns = 1,
+    int measuredRuns = 2,
+  }) async {
+    await loadModel();
+
+    final workspace = _ensureTensorWorkspace();
+    workspace.inputBuffer.fillRange(
+      0,
+      workspace.inputBuffer.length,
+      _letterboxFillValue,
+    );
+
+    var warmupMicros = 0;
+    for (var index = 0; index < warmupRuns; index++) {
+      warmupMicros = _runInference(workspace);
+    }
+
+    final measured = <int>[];
+    for (var index = 0; index < measuredRuns; index++) {
+      measured.add(_runInference(workspace));
+    }
+
+    final total = measured.fold<int>(0, (sum, value) => sum + value);
+    return TfliteBackendBenchmark(
+      config: _backendConfig,
+      initialized: true,
+      warmupMicros: warmupMicros,
+      averageMicros: measured.isEmpty ? 0 : total ~/ measured.length,
+      minMicros: measured.isEmpty ? 0 : measured.reduce(math.min),
+      maxMicros: measured.isEmpty ? 0 : measured.reduce(math.max),
+    );
   }
 
   Future<List<Detection>> detectFruits(File imageFile) async {
@@ -148,22 +291,18 @@ class ModelService {
     final timings = _MutableModelPipelineTimings();
     final totalStopwatch = Stopwatch()..start();
 
-    final preprocessed = _preprocessImage(decodedImage, timings: timings);
-    final outputs = _prepareOutputBuffers();
-    final inferenceStopwatch = Stopwatch()..start();
-    _interpreter!.runForMultipleInputs([
-      preprocessed.inputTensor,
-    ], outputs.rawOutputs);
-    inferenceStopwatch.stop();
-    timings.inferenceMicros = inferenceStopwatch.elapsedMicroseconds;
+    final workspace = _ensureTensorWorkspace();
+    final preprocessed = _preprocessImage(
+      decodedImage,
+      workspace: workspace,
+      timings: timings,
+    );
+    timings.inferenceMicros = _runInference(workspace);
 
     final postprocessStopwatch = Stopwatch()..start();
     final candidateParsingStopwatch = Stopwatch()..start();
-    final detectionChannels = _extractDetectionChannels(
-      outputs.rawOutputs[_detectionOutputIndex]!,
-    );
     final candidates = _parseSegmentationCandidates(
-      detectionChannels: detectionChannels,
+      detectionOutput: workspace.detectionOutputBuffer,
       metadata: preprocessed.metadata,
     );
     candidateParsingStopwatch.stop();
@@ -178,8 +317,9 @@ class ModelService {
     var finalCandidates = nmsCandidates;
     try {
       final protoStopwatch = Stopwatch()..start();
-      final protoTensor = _extractProtoTensor(
-        outputs.rawOutputs[_protoOutputIndex]!,
+      _copyProtoTensor(
+        rawProto: workspace.protoOutputBuffer,
+        channelFirstProto: workspace.protoChannelFirstBuffer,
       );
       protoStopwatch.stop();
       timings.protoExtractionMicros = protoStopwatch.elapsedMicroseconds;
@@ -187,7 +327,8 @@ class ModelService {
       final maskStopwatch = Stopwatch()..start();
       finalCandidates = _attachMasksAndFilterCandidates(
         candidates: nmsCandidates,
-        protoTensor: protoTensor,
+        protoTensor: workspace.protoChannelFirstBuffer,
+        maskLogitsBuffer: workspace.maskLogitsBuffer,
         metadata: preprocessed.metadata,
       );
       maskStopwatch.stop();
@@ -226,6 +367,7 @@ class ModelService {
 
   _PreprocessedImage _preprocessImage(
     img.Image decodedImage, {
+    required _ModelTensorWorkspace workspace,
     required _MutableModelPipelineTimings timings,
   }) {
     final preprocessStopwatch = Stopwatch()..start();
@@ -253,40 +395,36 @@ class ModelService {
       height: resizedHeight,
       interpolation: img.Interpolation.linear,
     );
-
-    final canvas = img.Image(
-      width: inputSize,
-      height: inputSize,
-      numChannels: 3,
-    );
-    img.fill(canvas, color: img.ColorRgb8(114, 114, 114));
-    img.compositeImage(canvas, resized, dstX: leftPad, dstY: topPad);
     resizeStopwatch.stop();
     timings.resizeLetterboxMicros = resizeStopwatch.elapsedMicroseconds;
 
     final tensorStopwatch = Stopwatch()..start();
-    final flatInput = Float32List(inputSize * inputSize * 3);
-    var tensorIndex = 0;
-    var minValue = double.infinity;
-    var maxValue = double.negativeInfinity;
+    final flatInput = workspace.inputBuffer;
+    flatInput.fillRange(0, flatInput.length, _letterboxFillValue);
+    final shouldCollectRange = _shouldVerboseLog;
+    var minValue = shouldCollectRange ? _letterboxFillValue : 0.0;
+    var maxValue = shouldCollectRange ? _letterboxFillValue : 0.0;
 
-    for (var y = 0; y < inputSize; y++) {
-      for (var x = 0; x < inputSize; x++) {
-        final pixel = canvas.getPixel(x, y);
+    for (var y = 0; y < resizedHeight; y++) {
+      final tensorRowOffset = ((y + topPad) * inputSize + leftPad) * 3;
+      for (var x = 0; x < resizedWidth; x++) {
+        final pixel = resized.getPixel(x, y);
         final red = pixel.r.toDouble() / 255.0;
         final green = pixel.g.toDouble() / 255.0;
         final blue = pixel.b.toDouble() / 255.0;
+        final tensorIndex = tensorRowOffset + (x * 3);
 
-        flatInput[tensorIndex++] = red;
-        flatInput[tensorIndex++] = green;
-        flatInput[tensorIndex++] = blue;
+        flatInput[tensorIndex] = red;
+        flatInput[tensorIndex + 1] = green;
+        flatInput[tensorIndex + 2] = blue;
 
-        minValue = math.min(minValue, math.min(red, math.min(green, blue)));
-        maxValue = math.max(maxValue, math.max(red, math.max(green, blue)));
+        if (shouldCollectRange) {
+          minValue = math.min(minValue, math.min(red, math.min(green, blue)));
+          maxValue = math.max(maxValue, math.max(red, math.max(green, blue)));
+        }
       }
     }
 
-    final inputTensor = flatInput.reshape<double>(_expectedInputShape);
     tensorStopwatch.stop();
     timings.tensorFillMicros = tensorStopwatch.elapsedMicroseconds;
 
@@ -302,7 +440,7 @@ class ModelService {
     timings.preprocessMicros = preprocessStopwatch.elapsedMicroseconds;
 
     return _PreprocessedImage(
-      inputTensor: inputTensor,
+      inputTensor: workspace.inputTensor,
       metadata: _PreprocessMetadata(
         originalWidth: originalWidth.toDouble(),
         originalHeight: originalHeight.toDouble(),
@@ -313,14 +451,44 @@ class ModelService {
     );
   }
 
-  _PreparedOutputs _prepareOutputBuffers() {
+  int _runInference(_ModelTensorWorkspace workspace) {
+    final stopwatch = Stopwatch()..start();
+    _interpreter!.runForMultipleInputs([
+      workspace.inputTensor,
+    ], workspace.rawOutputs);
+    stopwatch.stop();
+    return stopwatch.elapsedMicroseconds;
+  }
+
+  _ModelTensorWorkspace _ensureTensorWorkspace() {
+    final existingWorkspace = _tensorWorkspace;
+    if (existingWorkspace != null) {
+      return existingWorkspace;
+    }
+
+    final workspace = _createTensorWorkspace();
+    _tensorWorkspace = workspace;
+    return workspace;
+  }
+
+  _ModelTensorWorkspace _createTensorWorkspace() {
+    final inputBuffer = Float32List(_inputTensorElementCount);
     final rawOutputs = <int, Object>{};
     final shapes = <int, List<int>>{};
+    Float32List? detectionOutputBuffer;
+    Float32List? protoOutputBuffer;
 
     for (final index in [_detectionOutputIndex!, _protoOutputIndex!]) {
       final shape = List<int>.from(_interpreter!.getOutputTensor(index).shape);
       shapes[index] = shape;
-      rawOutputs[index] = _createTensorBuffer(shape);
+      final flatBuffer = Float32List(_elementCount(shape));
+      rawOutputs[index] = flatBuffer.buffer;
+
+      if (index == _detectionOutputIndex) {
+        detectionOutputBuffer = flatBuffer;
+      } else if (index == _protoOutputIndex) {
+        protoOutputBuffer = flatBuffer;
+      }
     }
 
     if (_shouldVerboseLog) {
@@ -330,44 +498,25 @@ class ModelService {
       );
     }
 
-    return _PreparedOutputs(rawOutputs: rawOutputs, shapes: shapes);
-  }
-
-  Object _createTensorBuffer(List<int> shape) {
-    final flatBuffer = Float32List(_elementCount(shape));
-    return flatBuffer.reshape<double>(shape);
-  }
-
-  List<List<dynamic>> _extractDetectionChannels(Object rawDetection) {
-    final detectionBatch = _asList(rawDetection, 'Detection tensor');
-    if (detectionBatch.length != 1) {
+    if (detectionOutputBuffer == null || protoOutputBuffer == null) {
       throw StateError(
-        'Detection tensor batch mismatch: ${detectionBatch.length}',
+        'Model output buffers could not be prepared for YOLOv8 segmentation.',
       );
     }
 
-    final channels = _asList(detectionBatch.first, 'Detection tensor channels');
-    if (channels.length != _detectionChannelCount) {
-      throw StateError(
-        'Detection tensor channels mismatch: ${channels.length} '
-        'expected $_detectionChannelCount',
-      );
-    }
-
-    return List<List<dynamic>>.generate(_detectionChannelCount, (index) {
-      final values = _asList(channels[index], 'Detection channel $index');
-      if (values.length != _candidateCount) {
-        throw StateError(
-          'Detection channel $index length mismatch: ${values.length} '
-          'expected $_candidateCount',
-        );
-      }
-      return values;
-    }, growable: false);
+    return _ModelTensorWorkspace(
+      inputBuffer: inputBuffer,
+      inputTensor: inputBuffer.buffer,
+      rawOutputs: rawOutputs,
+      detectionOutputBuffer: detectionOutputBuffer,
+      protoOutputBuffer: protoOutputBuffer,
+      protoChannelFirstBuffer: Float32List(_maskChannelCount * _protoPlaneSize),
+      maskLogitsBuffer: Float32List(_protoPlaneSize),
+    );
   }
 
   List<_SegmentationCandidate> _parseSegmentationCandidates({
-    required List<List<dynamic>> detectionChannels,
+    required Float32List detectionOutput,
     required _PreprocessMetadata metadata,
   }) {
     final candidates = <_SegmentationCandidate>[];
@@ -385,7 +534,11 @@ class ModelService {
       var bestScore = double.negativeInfinity;
 
       for (var classIndex = 0; classIndex < _classCount; classIndex++) {
-        final score = _valueAt(detectionChannels[4 + classIndex], anchor);
+        final score = _detectionValueAt(
+          detectionOutput,
+          channel: 4 + classIndex,
+          anchor: anchor,
+        );
         if (score > bestScore) {
           bestScore = score;
           bestClass = classIndex;
@@ -409,10 +562,10 @@ class ModelService {
       }
 
       final box = _decodeModelSpaceBox(
-        cx: _valueAt(detectionChannels[0], anchor),
-        cy: _valueAt(detectionChannels[1], anchor),
-        width: _valueAt(detectionChannels[2], anchor),
-        height: _valueAt(detectionChannels[3], anchor),
+        cx: _detectionValueAt(detectionOutput, channel: 0, anchor: anchor),
+        cy: _detectionValueAt(detectionOutput, channel: 1, anchor: anchor),
+        width: _detectionValueAt(detectionOutput, channel: 2, anchor: anchor),
+        height: _detectionValueAt(detectionOutput, channel: 3, anchor: anchor),
       );
       final clippedModelBox = _clipBoxToModel(box);
       final originalBox = _scaleBoxToOriginal(
@@ -430,9 +583,10 @@ class ModelService {
 
       final maskCoefficients = Float32List(_maskChannelCount);
       for (var maskIndex = 0; maskIndex < _maskChannelCount; maskIndex++) {
-        maskCoefficients[maskIndex] = _valueAt(
-          detectionChannels[4 + _classCount + maskIndex],
-          anchor,
+        maskCoefficients[maskIndex] = _detectionValueAt(
+          detectionOutput,
+          channel: 4 + _classCount + maskIndex,
+          anchor: anchor,
         );
       }
 
@@ -561,6 +715,7 @@ class ModelService {
   List<_SegmentationCandidate> _attachMasksAndFilterCandidates({
     required List<_SegmentationCandidate> candidates,
     required Float32List protoTensor,
+    required Float32List maskLogitsBuffer,
     required _PreprocessMetadata metadata,
   }) {
     if (candidates.isEmpty) {
@@ -571,19 +726,20 @@ class ModelService {
     var droppedByMask = 0;
 
     for (final candidate in candidates) {
-      final maskLogits = _decodeMaskLogits(
+      _writeMaskLogits(
         maskCoefficients: candidate.maskCoefficients,
         protoTensor: protoTensor,
+        maskLogits: maskLogitsBuffer,
       );
       if (_hasPositiveMaskPixels(
-        maskLogits: maskLogits,
+        maskLogits: maskLogitsBuffer,
         modelSpaceBox: candidate.modelSpaceBox,
       )) {
         kept.add(
           candidate.copyWith(
             visualMask: _buildDisplayMask(
               candidate: candidate,
-              maskLogits: maskLogits,
+              maskLogits: maskLogitsBuffer,
               metadata: metadata,
             ),
           ),
@@ -693,44 +849,16 @@ class ModelService {
     return smoothed;
   }
 
-  Float32List _extractProtoTensor(Object rawProto) {
-    final protoBatch = _asList(rawProto, 'Prototype tensor');
-    if (protoBatch.length != 1) {
-      throw StateError('Prototype tensor batch mismatch: ${protoBatch.length}');
-    }
-
-    final rows = _asList(protoBatch.first, 'Prototype rows');
-    if (rows.length != _protoHeight) {
-      throw StateError(
-        'Prototype tensor height mismatch: ${rows.length} expected $_protoHeight',
-      );
-    }
-
-    final protoTensor = Float32List(
-      _maskChannelCount * _protoHeight * _protoWidth,
-    );
+  void _copyProtoTensor({
+    required Float32List rawProto,
+    required Float32List channelFirstProto,
+  }) {
+    var rawIndex = 0;
     for (var y = 0; y < _protoHeight; y++) {
-      final row = _asList(rows[y], 'Prototype row $y');
-      if (row.length != _protoWidth) {
-        throw StateError(
-          'Prototype tensor width mismatch at row $y: ${row.length} '
-          'expected $_protoWidth',
-        );
-      }
-
       for (var x = 0; x < _protoWidth; x++) {
-        final channels = _asList(row[x], 'Prototype pixel ($x,$y)');
-        if (channels.length != _maskChannelCount) {
-          throw StateError(
-            'Prototype channel mismatch at ($x,$y): ${channels.length} '
-            'expected $_maskChannelCount',
-          );
-        }
-
         for (var channel = 0; channel < _maskChannelCount; channel++) {
-          final index =
-              (channel * _protoHeight * _protoWidth) + (y * _protoWidth) + x;
-          protoTensor[index] = _toDouble(channels[channel]);
+          final index = (channel * _protoPlaneSize) + (y * _protoWidth) + x;
+          channelFirstProto[index] = rawProto[rawIndex++];
         }
       }
     }
@@ -741,15 +869,14 @@ class ModelService {
         'proto=$_expectedProtoShape',
       );
     }
-
-    return protoTensor;
   }
 
-  Float32List _decodeMaskLogits({
+  void _writeMaskLogits({
     required Float32List maskCoefficients,
     required Float32List protoTensor,
+    required Float32List maskLogits,
   }) {
-    final maskLogits = Float32List(_protoHeight * _protoWidth);
+    maskLogits.fillRange(0, maskLogits.length, 0.0);
 
     for (var channel = 0; channel < _maskChannelCount; channel++) {
       final coefficient = maskCoefficients[channel];
@@ -757,13 +884,11 @@ class ModelService {
         continue;
       }
 
-      final channelOffset = channel * _protoHeight * _protoWidth;
+      final channelOffset = channel * _protoPlaneSize;
       for (var index = 0; index < maskLogits.length; index++) {
         maskLogits[index] += coefficient * protoTensor[channelOffset + index];
       }
     }
-
-    return maskLogits;
   }
 
   bool _hasPositiveMaskPixels({
@@ -987,15 +1112,22 @@ class ModelService {
     }
   }
 
-  List<dynamic> _asList(Object? value, String label) {
-    if (value is List<dynamic>) {
-      return value;
-    }
-    throw StateError('$label is not a List. Actual type: ${value.runtimeType}');
-  }
-
   int _elementCount(List<int> shape) {
     return shape.fold<int>(1, (product, value) => product * value);
+  }
+
+  double _detectionValueAt(
+    Float32List detectionOutput, {
+    required int channel,
+    required int anchor,
+  }) {
+    if (channel < 0 ||
+        channel >= _detectionChannelCount ||
+        anchor < 0 ||
+        anchor >= _candidateCount) {
+      return 0.0;
+    }
+    return detectionOutput[(channel * _candidateCount) + anchor];
   }
 
   bool _sameShape(List<int> a, List<int> b) {
@@ -1010,20 +1142,6 @@ class ModelService {
     return true;
   }
 
-  double _valueAt(List<dynamic> values, int index) {
-    if (index < 0 || index >= values.length) {
-      return 0.0;
-    }
-    return _toDouble(values[index]);
-  }
-
-  double _toDouble(dynamic value) {
-    if (value is num) {
-      return value.toDouble();
-    }
-    return double.tryParse(value.toString()) ?? 0.0;
-  }
-
   double _clamp(double value, double min, double max) {
     return (value.clamp(min, max) as num).toDouble();
   }
@@ -1034,10 +1152,43 @@ class ModelService {
 
   void dispose() {
     _interpreter?.close();
+    _delegate?.delete();
     _interpreter = null;
+    _delegate = null;
     _detectionOutputIndex = null;
     _protoOutputIndex = null;
+    _tensorWorkspace = null;
   }
+}
+
+class _InterpreterRuntime {
+  const _InterpreterRuntime({
+    required this.interpreter,
+    required this.delegate,
+  });
+
+  final Interpreter interpreter;
+  final Delegate? delegate;
+}
+
+class _ModelTensorWorkspace {
+  const _ModelTensorWorkspace({
+    required this.inputBuffer,
+    required this.inputTensor,
+    required this.rawOutputs,
+    required this.detectionOutputBuffer,
+    required this.protoOutputBuffer,
+    required this.protoChannelFirstBuffer,
+    required this.maskLogitsBuffer,
+  });
+
+  final Float32List inputBuffer;
+  final Object inputTensor;
+  final Map<int, Object> rawOutputs;
+  final Float32List detectionOutputBuffer;
+  final Float32List protoOutputBuffer;
+  final Float32List protoChannelFirstBuffer;
+  final Float32List maskLogitsBuffer;
 }
 
 class _PreprocessedImage {
@@ -1089,13 +1240,6 @@ class _PreprocessMetadata {
   final double gain;
   final double leftPad;
   final double topPad;
-}
-
-class _PreparedOutputs {
-  const _PreparedOutputs({required this.rawOutputs, required this.shapes});
-
-  final Map<int, Object> rawOutputs;
-  final Map<int, List<int>> shapes;
 }
 
 class _SegmentationCandidate {

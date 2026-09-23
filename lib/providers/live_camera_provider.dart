@@ -4,9 +4,11 @@ import 'dart:math' as math;
 import 'package:camera/camera.dart';
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/services/camera_image_converter.dart';
+import 'package:calabash_maturity_detection/services/live_inference_worker.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -31,14 +33,13 @@ class LiveDetection {
 }
 
 class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
-  LiveCameraProvider({required ModelService modelService})
-    : _modelService = modelService {
+  LiveCameraProvider() {
     WidgetsBinding.instance.addObserver(this);
+    SchedulerBinding.instance.addTimingsCallback(_handleFrameTimings);
   }
 
-  final ModelService _modelService;
-
   CameraController? _cameraController;
+  LiveInferenceWorker? _inferenceWorker;
   LiveCameraStatus _status = LiveCameraStatus.initial;
   List<LiveDetection> _liveDetections = [];
   List<_StableDetectionTrack> _tracks = [];
@@ -166,6 +167,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
 
+      unawaited(_ensureInferenceWorkerStarted());
       await controller.startImageStream(_handleCameraFrame);
       if (_isDisposed || _cameraController != controller) {
         await _disposeController(controller);
@@ -180,6 +182,39 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         LiveCameraStatus.cameraError,
         errorMessage: 'Camera could not be started: $error',
       );
+    }
+  }
+
+  Future<void> _ensureInferenceWorkerStarted() async {
+    if (_isDisposed || _inferenceWorker?.isReady == true) {
+      return;
+    }
+
+    final worker = LiveInferenceWorker();
+    _inferenceWorker = worker;
+    try {
+      await worker.start();
+      if (_isDisposed || _inferenceWorker != worker) {
+        await worker.dispose();
+        return;
+      }
+      final backendInfo = worker.backendInfo;
+      if (backendInfo != null) {
+        _performanceTracker.recordBackendInfo(backendInfo);
+      }
+      _safeNotifyListeners();
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('Live inference worker failed to start: $error');
+      }
+      if (!_isDisposed && _inferenceWorker == worker) {
+        _errorMessage = 'Live detection worker failed to start.';
+        _safeNotifyListeners();
+      }
+      await worker.dispose();
+      if (_inferenceWorker == worker) {
+        _inferenceWorker = null;
+      }
     }
   }
 
@@ -233,17 +268,20 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         frame.camera,
         frame.deviceOrientation,
       );
-      final conversionTiming = CameraImageConversionTiming();
-      final decodedFrame = CameraImageConverter.toImage(
-        frame.image,
+
+      final worker = _inferenceWorker;
+      if (worker == null || !worker.isReady) {
+        _performanceTracker.recordFrameDropped();
+        return;
+      }
+
+      final workerFrame = LiveInferenceFrame.fromCameraImage(
+        frameId: frame.id,
+        image: frame.image,
         rotationDegrees: rotationDegrees,
         lensDirection: frame.camera.lensDirection,
-        timing: conversionTiming,
       );
-
-      final modelResult = await _modelService.detectFruitsFromImageWithMetrics(
-        decodedFrame,
-      );
+      final modelResult = await worker.detect(workerFrame);
       final inferenceEndAt = DateTime.now();
       if (_isDisposed || _cameraController != activeController) {
         _performanceTracker.recordFrameDropped();
@@ -259,18 +297,20 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         publishedAt: publishAt,
       );
       _latestFrameSize = Size(
-        decodedFrame.width.toDouble(),
-        decodedFrame.height.toDouble(),
+        modelResult.imageWidth.toDouble(),
+        modelResult.imageHeight.toDouble(),
       );
-      _liveDetections = _stabilizeDetections(modelResult.detections);
+      _liveDetections = _stabilizeDetections(modelResult.toDetections());
       _hasProcessedFrame = true;
       _errorMessage = null;
       shouldNotify = true;
       _performanceTracker.recordFrameProcessed(
         _LiveFramePerformanceSample(
           frameTelemetry: _latestFrameTelemetry!,
-          conversionTiming: conversionTiming,
-          modelTimings: modelResult.timings,
+          conversionTiming: modelResult.conversionTiming,
+          modelTimings: modelResult.modelTimings,
+          frameTransferMicros: modelResult.frameTransferMicros,
+          backendInfo: modelResult.backendInfo,
         ),
       );
     } catch (error) {
@@ -300,6 +340,10 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
     }
+  }
+
+  void _handleFrameTimings(List<FrameTiming> timings) {
+    _performanceTracker.recordUiFrameTimings(timings);
   }
 
   List<LiveDetection> _stabilizeDetections(List<Detection> detections) {
@@ -435,7 +479,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _releaseCamera({required bool keepLiveState}) async {
     final controller = _cameraController;
+    final inferenceWorker = _inferenceWorker;
     _cameraController = null;
+    _inferenceWorker = null;
     _pendingFrame = null;
     _isProcessingFrame = false;
     _performanceTracker.reset();
@@ -450,10 +496,12 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     if (controller == null) {
+      await inferenceWorker?.dispose();
       return;
     }
 
     await _disposeController(controller);
+    await inferenceWorker?.dispose();
   }
 
   Future<void> _disposeController(CameraController controller) async {
@@ -521,6 +569,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   void dispose() {
     _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
+    SchedulerBinding.instance.removeTimingsCallback(_handleFrameTimings);
     unawaited(_releaseCamera(keepLiveState: false));
     super.dispose();
   }
@@ -607,11 +656,15 @@ class _LiveFramePerformanceSample {
     required this.frameTelemetry,
     required this.conversionTiming,
     required this.modelTimings,
+    required this.frameTransferMicros,
+    required this.backendInfo,
   });
 
   final _LiveFrameTelemetry frameTelemetry;
   final CameraImageConversionTiming conversionTiming;
   final ModelPipelineTimings modelTimings;
+  final int frameTransferMicros;
+  final LiveInferenceBackendInfo backendInfo;
 }
 
 class _LivePerformanceTracker {
@@ -621,7 +674,11 @@ class _LivePerformanceTracker {
   int _framesReplaced = 0;
   int _framesDropped = 0;
   int? _lastProcessedFrameId;
+  LiveInferenceBackendInfo? _backendInfo;
+  int _uiFrameCount = 0;
+  int _jankyUiFrameCount = 0;
 
+  final _TimingAccumulator _frameTransfer = _TimingAccumulator();
   final _TimingAccumulator _rgbConversion = _TimingAccumulator();
   final _TimingAccumulator _orientation = _TimingAccumulator();
   final _TimingAccumulator _preprocess = _TimingAccumulator();
@@ -635,6 +692,9 @@ class _LivePerformanceTracker {
   final _TimingAccumulator _postprocess = _TimingAccumulator();
   final _TimingAccumulator _totalAi = _TimingAccumulator();
   final _TimingAccumulator _resultAge = _TimingAccumulator();
+  final _TimingAccumulator _uiBuild = _TimingAccumulator();
+  final _TimingAccumulator _uiRaster = _TimingAccumulator();
+  final _TimingAccumulator _uiTotal = _TimingAccumulator();
 
   void recordFrameReceived(DateTime receivedAt) {
     _ensureWindow(receivedAt);
@@ -653,11 +713,34 @@ class _LivePerformanceTracker {
     _framesDropped++;
   }
 
+  void recordBackendInfo(LiveInferenceBackendInfo backendInfo) {
+    _backendInfo = backendInfo;
+  }
+
+  void recordUiFrameTimings(List<FrameTiming> timings) {
+    const jankThresholdMicros = 16667;
+    final now = DateTime.now();
+    _ensureWindow(now);
+
+    for (final timing in timings) {
+      final totalMicros = timing.totalSpan.inMicroseconds;
+      _uiFrameCount++;
+      if (totalMicros > jankThresholdMicros) {
+        _jankyUiFrameCount++;
+      }
+      _uiBuild.add(timing.buildDuration.inMicroseconds);
+      _uiRaster.add(timing.rasterDuration.inMicroseconds);
+      _uiTotal.add(totalMicros);
+    }
+  }
+
   void recordFrameProcessed(_LiveFramePerformanceSample sample) {
     _ensureWindow(sample.frameTelemetry.publishedAt);
     _framesProcessed++;
     _lastProcessedFrameId = sample.frameTelemetry.frameId;
+    _backendInfo = sample.backendInfo;
 
+    _frameTransfer.add(sample.frameTransferMicros);
     _rgbConversion.add(sample.conversionTiming.rgbConversionMicros);
     _orientation.add(sample.conversionTiming.orientationMicros);
     _preprocess.add(sample.modelTimings.preprocessMicros);
@@ -689,9 +772,11 @@ class _LivePerformanceTracker {
         elapsed.inMicroseconds / Duration.microsecondsPerSecond;
     final cameraFps = _framesReceived / elapsedSeconds;
     final aiFps = _framesProcessed / elapsedSeconds;
+    final backendInfo = _backendInfo;
 
     debugPrint(
       'LIVE PERF\n'
+      'Backend: ${backendInfo?.label ?? 'initializing'}\n'
       'Camera FPS: ${cameraFps.toStringAsFixed(1)}\n'
       'AI FPS: ${aiFps.toStringAsFixed(1)}\n'
       'Frames received: $_framesReceived\n'
@@ -700,6 +785,12 @@ class _LivePerformanceTracker {
       'Frames dropped/skipped: $_framesDropped\n'
       'Pending: $pendingFrameCount\n'
       'Last frame ID: ${_lastProcessedFrameId ?? '-'}\n\n'
+      'UI frames: $_uiFrameCount\n'
+      'UI janky frames: $_jankyUiFrameCount\n'
+      'UI build: ${_uiBuild.averageMsLabel}\n'
+      'UI raster: ${_uiRaster.averageMsLabel}\n'
+      'UI total: ${_uiTotal.averageMsLabel}\n\n'
+      'Frame transfer: ${_frameTransfer.averageMsLabel}\n'
       'Conversion: ${_rgbConversion.averageMsLabel}\n'
       'Rotation/flip: ${_orientation.averageMsLabel}\n'
       'Preprocess: ${_preprocess.averageMsLabel}\n'
@@ -719,6 +810,7 @@ class _LivePerformanceTracker {
 
   void reset() {
     _windowStartedAt = null;
+    _backendInfo = null;
     _resetCounters();
   }
 
@@ -737,6 +829,9 @@ class _LivePerformanceTracker {
     _framesReplaced = 0;
     _framesDropped = 0;
     _lastProcessedFrameId = null;
+    _uiFrameCount = 0;
+    _jankyUiFrameCount = 0;
+    _frameTransfer.reset();
     _rgbConversion.reset();
     _orientation.reset();
     _preprocess.reset();
@@ -750,6 +845,9 @@ class _LivePerformanceTracker {
     _postprocess.reset();
     _totalAi.reset();
     _resultAge.reset();
+    _uiBuild.reset();
+    _uiRaster.reset();
+    _uiTotal.reset();
   }
 }
 

@@ -2,7 +2,6 @@ import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:calabash_maturity_detection/models/detection.dart';
-import 'package:calabash_maturity_detection/providers/detection_provider.dart';
 import 'package:calabash_maturity_detection/providers/live_camera_provider.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:calabash_maturity_detection/widgets/detection_box.dart';
@@ -15,11 +14,8 @@ class LiveCameraScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final modelService = context.read<DetectionProvider>().modelService;
-
     return ChangeNotifierProvider(
-      create: (_) =>
-          LiveCameraProvider(modelService: modelService)..initialize(),
+      create: (_) => LiveCameraProvider()..initialize(),
       child: const _LiveCameraView(),
     );
   }
