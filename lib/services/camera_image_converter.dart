@@ -10,7 +10,9 @@ class CameraImageConverter {
     CameraImage frame, {
     required int rotationDegrees,
     required CameraLensDirection lensDirection,
+    CameraImageConversionTiming? timing,
   }) {
+    final rgbStopwatch = Stopwatch()..start();
     final rgbImage = switch (frame.format.group) {
       ImageFormatGroup.yuv420 => _fromYuv420(frame),
       ImageFormatGroup.bgra8888 => _fromBgra8888(frame),
@@ -18,7 +20,10 @@ class CameraImageConverter {
         'Unsupported camera image format: ${frame.format.group}',
       ),
     };
+    rgbStopwatch.stop();
+    timing?.rgbConversionMicros = rgbStopwatch.elapsedMicroseconds;
 
+    final orientationStopwatch = Stopwatch()..start();
     final normalizedRotation = rotationDegrees % 360;
     var orientedImage = normalizedRotation == 0
         ? rgbImage
@@ -27,6 +32,8 @@ class CameraImageConverter {
     if (lensDirection == CameraLensDirection.front) {
       orientedImage = img.flipHorizontal(orientedImage);
     }
+    orientationStopwatch.stop();
+    timing?.orientationMicros = orientationStopwatch.elapsedMicroseconds;
 
     return orientedImage;
   }
@@ -101,4 +108,11 @@ class CameraImageConverter {
   static int _clampToByte(double value) {
     return math.max(0, math.min(255, value.round()));
   }
+}
+
+class CameraImageConversionTiming {
+  int rgbConversionMicros = 0;
+  int orientationMicros = 0;
+
+  int get totalMicros => rgbConversionMicros + orientationMicros;
 }

@@ -11,7 +11,6 @@ class AppConstants {
   static const double iouThreshold = 0.70;
   static const int maxDetections = 300;
   static const double maskLogitThreshold = 0.0;
-  static const Duration liveInferenceInterval = Duration(milliseconds: 1500);
   static const double liveHighConfidenceThreshold = 0.70;
   static const double liveWeakConfidenceThreshold = 0.50;
   static const int liveStableClassFrames = 2;

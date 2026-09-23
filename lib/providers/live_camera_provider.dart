@@ -43,7 +43,10 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<LiveDetection> _liveDetections = [];
   List<_StableDetectionTrack> _tracks = [];
   Size? _latestFrameSize;
-  DateTime? _lastInferenceAt;
+  _LiveCameraFrame? _pendingFrame;
+  _LiveFrameTelemetry? _latestFrameTelemetry;
+  final _performanceTracker = _LivePerformanceTracker();
+  int _nextFrameId = 1;
   String? _errorMessage;
   bool _isInitializingSession = false;
   bool _isProcessingFrame = false;
@@ -58,6 +61,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get errorMessage => _errorMessage;
   bool get isProcessingFrame => _isProcessingFrame;
   bool get hasProcessedFrame => _hasProcessedFrame;
+  int get _pendingFrameCount => _pendingFrame == null ? 0 : 1;
 
   bool get isCameraReady =>
       _status == LiveCameraStatus.cameraReady &&
@@ -180,55 +184,95 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _handleCameraFrame(CameraImage frame) {
-    if (_isDisposed || _isProcessingFrame) {
+    final capturedAt = DateTime.now();
+    _performanceTracker.recordFrameReceived(capturedAt);
+
+    final activeController = _cameraController;
+    if (_isDisposed ||
+        activeController == null ||
+        !activeController.value.isInitialized) {
+      _performanceTracker.recordFrameDropped();
+      _performanceTracker.maybeLog(pendingFrameCount: _pendingFrameCount);
       return;
     }
 
-    final now = DateTime.now();
-    final lastInferenceAt = _lastInferenceAt;
-    if (lastInferenceAt != null &&
-        now.difference(lastInferenceAt) < AppConstants.liveInferenceInterval) {
+    final liveFrame = _LiveCameraFrame(
+      id: _nextFrameId++,
+      image: frame,
+      capturedAt: capturedAt,
+      camera: activeController.description,
+      deviceOrientation: activeController.value.deviceOrientation,
+    );
+
+    if (_isProcessingFrame) {
+      final replacedExistingFrame = _pendingFrame != null;
+      _pendingFrame = liveFrame;
+      _performanceTracker.recordFrameStoredWhileBusy(
+        replacedExistingFrame: replacedExistingFrame,
+      );
+      _performanceTracker.maybeLog(pendingFrameCount: _pendingFrameCount);
       return;
     }
 
-    _lastInferenceAt = now;
-    unawaited(_processFrame(frame));
+    unawaited(_processFrame(liveFrame));
   }
 
-  Future<void> _processFrame(CameraImage frame) async {
+  Future<void> _processFrame(_LiveCameraFrame frame) async {
     final activeController = _cameraController;
     if (activeController == null || _isDisposed) {
+      _performanceTracker.recordFrameDropped();
       return;
     }
 
     _isProcessingFrame = true;
-    _safeNotifyListeners();
 
+    var shouldNotify = false;
     try {
+      final inferenceStartAt = DateTime.now();
       final rotationDegrees = _rotationDegrees(
-        activeController.description,
-        activeController.value.deviceOrientation,
+        frame.camera,
+        frame.deviceOrientation,
       );
+      final conversionTiming = CameraImageConversionTiming();
       final decodedFrame = CameraImageConverter.toImage(
-        frame,
+        frame.image,
         rotationDegrees: rotationDegrees,
-        lensDirection: activeController.description.lensDirection,
+        lensDirection: frame.camera.lensDirection,
+        timing: conversionTiming,
       );
 
-      final detections = await _modelService.detectFruitsFromImage(
+      final modelResult = await _modelService.detectFruitsFromImageWithMetrics(
         decodedFrame,
       );
+      final inferenceEndAt = DateTime.now();
       if (_isDisposed || _cameraController != activeController) {
+        _performanceTracker.recordFrameDropped();
         return;
       }
 
+      final publishAt = DateTime.now();
+      _latestFrameTelemetry = _LiveFrameTelemetry(
+        frameId: frame.id,
+        capturedAt: frame.capturedAt,
+        inferenceStartAt: inferenceStartAt,
+        inferenceEndAt: inferenceEndAt,
+        publishedAt: publishAt,
+      );
       _latestFrameSize = Size(
         decodedFrame.width.toDouble(),
         decodedFrame.height.toDouble(),
       );
-      _liveDetections = _stabilizeDetections(detections);
+      _liveDetections = _stabilizeDetections(modelResult.detections);
       _hasProcessedFrame = true;
       _errorMessage = null;
+      shouldNotify = true;
+      _performanceTracker.recordFrameProcessed(
+        _LiveFramePerformanceSample(
+          frameTelemetry: _latestFrameTelemetry!,
+          conversionTiming: conversionTiming,
+          modelTimings: modelResult.timings,
+        ),
+      );
     } catch (error) {
       if (kDebugMode) {
         debugPrint('Live frame detection failed: $error');
@@ -236,11 +280,24 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (!_isDisposed) {
         _hasProcessedFrame = true;
         _errorMessage = 'Live detection failed. Keep the camera steady.';
+        shouldNotify = true;
       }
     } finally {
       if (!_isDisposed) {
+        final nextFrame = _pendingFrame;
+        _pendingFrame = null;
         _isProcessingFrame = false;
-        _safeNotifyListeners();
+        _performanceTracker.maybeLog(pendingFrameCount: _pendingFrameCount);
+        if (shouldNotify) {
+          _safeNotifyListeners();
+        }
+        if (nextFrame != null) {
+          if (_cameraController == activeController) {
+            unawaited(_processFrame(nextFrame));
+          } else {
+            _performanceTracker.recordFrameDropped();
+          }
+        }
       }
     }
   }
@@ -379,13 +436,15 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _releaseCamera({required bool keepLiveState}) async {
     final controller = _cameraController;
     _cameraController = null;
-    _lastInferenceAt = null;
+    _pendingFrame = null;
     _isProcessingFrame = false;
+    _performanceTracker.reset();
 
     if (!keepLiveState) {
       _liveDetections = [];
       _tracks = [];
       _latestFrameSize = null;
+      _latestFrameTelemetry = null;
       _hasProcessedFrame = false;
       _errorMessage = null;
     }
@@ -503,5 +562,216 @@ class _StableDetectionTrack {
       pendingClass = null;
       pendingCount = 0;
     }
+  }
+}
+
+class _LiveCameraFrame {
+  const _LiveCameraFrame({
+    required this.id,
+    required this.image,
+    required this.capturedAt,
+    required this.camera,
+    required this.deviceOrientation,
+  });
+
+  final int id;
+  final CameraImage image;
+  final DateTime capturedAt;
+  final CameraDescription camera;
+  final DeviceOrientation deviceOrientation;
+}
+
+class _LiveFrameTelemetry {
+  const _LiveFrameTelemetry({
+    required this.frameId,
+    required this.capturedAt,
+    required this.inferenceStartAt,
+    required this.inferenceEndAt,
+    required this.publishedAt,
+  });
+
+  final int frameId;
+  final DateTime capturedAt;
+  final DateTime inferenceStartAt;
+  final DateTime inferenceEndAt;
+  final DateTime publishedAt;
+
+  int get resultAgeMicros => publishedAt.difference(capturedAt).inMicroseconds;
+
+  int get totalAiMicros =>
+      inferenceEndAt.difference(inferenceStartAt).inMicroseconds;
+}
+
+class _LiveFramePerformanceSample {
+  const _LiveFramePerformanceSample({
+    required this.frameTelemetry,
+    required this.conversionTiming,
+    required this.modelTimings,
+  });
+
+  final _LiveFrameTelemetry frameTelemetry;
+  final CameraImageConversionTiming conversionTiming;
+  final ModelPipelineTimings modelTimings;
+}
+
+class _LivePerformanceTracker {
+  DateTime? _windowStartedAt;
+  int _framesReceived = 0;
+  int _framesProcessed = 0;
+  int _framesReplaced = 0;
+  int _framesDropped = 0;
+  int? _lastProcessedFrameId;
+
+  final _TimingAccumulator _rgbConversion = _TimingAccumulator();
+  final _TimingAccumulator _orientation = _TimingAccumulator();
+  final _TimingAccumulator _preprocess = _TimingAccumulator();
+  final _TimingAccumulator _resizeLetterbox = _TimingAccumulator();
+  final _TimingAccumulator _tensorFill = _TimingAccumulator();
+  final _TimingAccumulator _inference = _TimingAccumulator();
+  final _TimingAccumulator _candidateParsing = _TimingAccumulator();
+  final _TimingAccumulator _nms = _TimingAccumulator();
+  final _TimingAccumulator _protoExtraction = _TimingAccumulator();
+  final _TimingAccumulator _maskReconstruction = _TimingAccumulator();
+  final _TimingAccumulator _postprocess = _TimingAccumulator();
+  final _TimingAccumulator _totalAi = _TimingAccumulator();
+  final _TimingAccumulator _resultAge = _TimingAccumulator();
+
+  void recordFrameReceived(DateTime receivedAt) {
+    _ensureWindow(receivedAt);
+    _framesReceived++;
+  }
+
+  void recordFrameStoredWhileBusy({required bool replacedExistingFrame}) {
+    if (!replacedExistingFrame) {
+      return;
+    }
+    _framesReplaced++;
+    _framesDropped++;
+  }
+
+  void recordFrameDropped() {
+    _framesDropped++;
+  }
+
+  void recordFrameProcessed(_LiveFramePerformanceSample sample) {
+    _ensureWindow(sample.frameTelemetry.publishedAt);
+    _framesProcessed++;
+    _lastProcessedFrameId = sample.frameTelemetry.frameId;
+
+    _rgbConversion.add(sample.conversionTiming.rgbConversionMicros);
+    _orientation.add(sample.conversionTiming.orientationMicros);
+    _preprocess.add(sample.modelTimings.preprocessMicros);
+    _resizeLetterbox.add(sample.modelTimings.resizeLetterboxMicros);
+    _tensorFill.add(sample.modelTimings.tensorFillMicros);
+    _inference.add(sample.modelTimings.inferenceMicros);
+    _candidateParsing.add(sample.modelTimings.candidateParsingMicros);
+    _nms.add(sample.modelTimings.nmsMicros);
+    _protoExtraction.add(sample.modelTimings.protoExtractionMicros);
+    _maskReconstruction.add(sample.modelTimings.maskReconstructionMicros);
+    _postprocess.add(sample.modelTimings.postprocessMicros);
+    _totalAi.add(sample.frameTelemetry.totalAiMicros);
+    _resultAge.add(sample.frameTelemetry.resultAgeMicros);
+  }
+
+  void maybeLog({required int pendingFrameCount}) {
+    if (!kDebugMode) {
+      return;
+    }
+
+    final now = DateTime.now();
+    _ensureWindow(now);
+    final elapsed = now.difference(_windowStartedAt!);
+    if (elapsed < const Duration(seconds: 1)) {
+      return;
+    }
+
+    final elapsedSeconds =
+        elapsed.inMicroseconds / Duration.microsecondsPerSecond;
+    final cameraFps = _framesReceived / elapsedSeconds;
+    final aiFps = _framesProcessed / elapsedSeconds;
+
+    debugPrint(
+      'LIVE PERF\n'
+      'Camera FPS: ${cameraFps.toStringAsFixed(1)}\n'
+      'AI FPS: ${aiFps.toStringAsFixed(1)}\n'
+      'Frames received: $_framesReceived\n'
+      'Frames processed: $_framesProcessed\n'
+      'Frames replaced: $_framesReplaced\n'
+      'Frames dropped/skipped: $_framesDropped\n'
+      'Pending: $pendingFrameCount\n'
+      'Last frame ID: ${_lastProcessedFrameId ?? '-'}\n\n'
+      'Conversion: ${_rgbConversion.averageMsLabel}\n'
+      'Rotation/flip: ${_orientation.averageMsLabel}\n'
+      'Preprocess: ${_preprocess.averageMsLabel}\n'
+      'Resize/letterbox: ${_resizeLetterbox.averageMsLabel}\n'
+      'Tensor fill: ${_tensorFill.averageMsLabel}\n'
+      'Inference: ${_inference.averageMsLabel}\n'
+      'Candidate parse: ${_candidateParsing.averageMsLabel}\n'
+      'NMS: ${_nms.averageMsLabel}\n'
+      'Proto extraction: ${_protoExtraction.averageMsLabel}\n'
+      'Masks: ${_maskReconstruction.averageMsLabel}\n'
+      'Postprocess: ${_postprocess.averageMsLabel}\n'
+      'Total AI: ${_totalAi.averageMsLabel}\n'
+      'Result age: ${_resultAge.averageMsLabel}',
+    );
+    _resetWindow(now);
+  }
+
+  void reset() {
+    _windowStartedAt = null;
+    _resetCounters();
+  }
+
+  void _ensureWindow(DateTime timestamp) {
+    _windowStartedAt ??= timestamp;
+  }
+
+  void _resetWindow(DateTime startedAt) {
+    _windowStartedAt = startedAt;
+    _resetCounters();
+  }
+
+  void _resetCounters() {
+    _framesReceived = 0;
+    _framesProcessed = 0;
+    _framesReplaced = 0;
+    _framesDropped = 0;
+    _lastProcessedFrameId = null;
+    _rgbConversion.reset();
+    _orientation.reset();
+    _preprocess.reset();
+    _resizeLetterbox.reset();
+    _tensorFill.reset();
+    _inference.reset();
+    _candidateParsing.reset();
+    _nms.reset();
+    _protoExtraction.reset();
+    _maskReconstruction.reset();
+    _postprocess.reset();
+    _totalAi.reset();
+    _resultAge.reset();
+  }
+}
+
+class _TimingAccumulator {
+  int _sampleCount = 0;
+  int _totalMicros = 0;
+
+  void add(int micros) {
+    _sampleCount++;
+    _totalMicros += micros;
+  }
+
+  void reset() {
+    _sampleCount = 0;
+    _totalMicros = 0;
+  }
+
+  String get averageMsLabel {
+    if (_sampleCount == 0) {
+      return 'n/a';
+    }
+    final averageMs = (_totalMicros / _sampleCount) / 1000;
+    return '${averageMs.toStringAsFixed(1)} ms';
   }
 }

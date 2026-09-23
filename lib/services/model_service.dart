@@ -8,6 +8,39 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 
+class ModelDetectionResult {
+  const ModelDetectionResult({required this.detections, required this.timings});
+
+  final List<Detection> detections;
+  final ModelPipelineTimings timings;
+}
+
+class ModelPipelineTimings {
+  const ModelPipelineTimings({
+    required this.preprocessMicros,
+    required this.resizeLetterboxMicros,
+    required this.tensorFillMicros,
+    required this.inferenceMicros,
+    required this.candidateParsingMicros,
+    required this.nmsMicros,
+    required this.protoExtractionMicros,
+    required this.maskReconstructionMicros,
+    required this.postprocessMicros,
+    required this.totalMicros,
+  });
+
+  final int preprocessMicros;
+  final int resizeLetterboxMicros;
+  final int tensorFillMicros;
+  final int inferenceMicros;
+  final int candidateParsingMicros;
+  final int nmsMicros;
+  final int protoExtractionMicros;
+  final int maskReconstructionMicros;
+  final int postprocessMicros;
+  final int totalMicros;
+}
+
 class ModelService {
   static const int _classCount = 3;
   static const int _maskChannelCount = 32;
@@ -16,6 +49,7 @@ class ModelService {
   static const int _protoWidth = 160;
   static const int _debugLogCount = 5;
   static const int _detectionChannelCount = 4 + _classCount + _maskChannelCount;
+  static const bool _enableVerboseModelLogs = false;
 
   static const List<int> _expectedInputShape = [
     1,
@@ -42,6 +76,7 @@ class ModelService {
   int? _protoOutputIndex;
 
   bool get isModelReady => _interpreter != null;
+  bool get _shouldVerboseLog => kDebugMode && _enableVerboseModelLogs;
 
   Future<void> loadModel() async {
     if (_interpreter != null || _isLoadingModel) {
@@ -74,6 +109,13 @@ class ModelService {
   }
 
   Future<List<Detection>> detectFruitsFromImage(img.Image image) async {
+    final result = await detectFruitsFromImageWithMetrics(image);
+    return result.detections;
+  }
+
+  Future<ModelDetectionResult> detectFruitsFromImageWithMetrics(
+    img.Image image,
+  ) async {
     await loadModel();
 
     if (_interpreter == null) {
@@ -102,13 +144,21 @@ class ModelService {
     return decodedImage;
   }
 
-  List<Detection> _detectFruitsFromDecodedImage(img.Image decodedImage) {
-    final preprocessed = _preprocessImage(decodedImage);
+  ModelDetectionResult _detectFruitsFromDecodedImage(img.Image decodedImage) {
+    final timings = _MutableModelPipelineTimings();
+    final totalStopwatch = Stopwatch()..start();
+
+    final preprocessed = _preprocessImage(decodedImage, timings: timings);
     final outputs = _prepareOutputBuffers();
+    final inferenceStopwatch = Stopwatch()..start();
     _interpreter!.runForMultipleInputs([
       preprocessed.inputTensor,
     ], outputs.rawOutputs);
+    inferenceStopwatch.stop();
+    timings.inferenceMicros = inferenceStopwatch.elapsedMicroseconds;
 
+    final postprocessStopwatch = Stopwatch()..start();
+    final candidateParsingStopwatch = Stopwatch()..start();
     final detectionChannels = _extractDetectionChannels(
       outputs.rawOutputs[_detectionOutputIndex]!,
     );
@@ -116,18 +166,32 @@ class ModelService {
       detectionChannels: detectionChannels,
       metadata: preprocessed.metadata,
     );
+    candidateParsingStopwatch.stop();
+    timings.candidateParsingMicros =
+        candidateParsingStopwatch.elapsedMicroseconds;
+
+    final nmsStopwatch = Stopwatch()..start();
     final nmsCandidates = _applyClassAwareNms(candidates);
+    nmsStopwatch.stop();
+    timings.nmsMicros = nmsStopwatch.elapsedMicroseconds;
 
     var finalCandidates = nmsCandidates;
     try {
+      final protoStopwatch = Stopwatch()..start();
       final protoTensor = _extractProtoTensor(
         outputs.rawOutputs[_protoOutputIndex]!,
       );
+      protoStopwatch.stop();
+      timings.protoExtractionMicros = protoStopwatch.elapsedMicroseconds;
+
+      final maskStopwatch = Stopwatch()..start();
       finalCandidates = _attachMasksAndFilterCandidates(
         candidates: nmsCandidates,
         protoTensor: protoTensor,
         metadata: preprocessed.metadata,
       );
+      maskStopwatch.stop();
+      timings.maskReconstructionMicros = maskStopwatch.elapsedMicroseconds;
     } catch (error) {
       if (kDebugMode) {
         debugPrint('Mask filtering skipped. Error: $error');
@@ -138,7 +202,7 @@ class ModelService {
         .map((candidate) => candidate.toDetection(preprocessed.metadata))
         .toList(growable: false);
 
-    if (kDebugMode) {
+    if (_shouldVerboseLog) {
       debugPrint(
         'Postprocess summary: parsed=${candidates.length} '
         'afterNms=${nmsCandidates.length} final=${detections.length}',
@@ -149,10 +213,22 @@ class ModelService {
       );
     }
 
-    return detections;
+    postprocessStopwatch.stop();
+    totalStopwatch.stop();
+    timings.postprocessMicros = postprocessStopwatch.elapsedMicroseconds;
+    timings.totalMicros = totalStopwatch.elapsedMicroseconds;
+
+    return ModelDetectionResult(
+      detections: detections,
+      timings: timings.toImmutable(),
+    );
   }
 
-  _PreprocessedImage _preprocessImage(img.Image decodedImage) {
+  _PreprocessedImage _preprocessImage(
+    img.Image decodedImage, {
+    required _MutableModelPipelineTimings timings,
+  }) {
+    final preprocessStopwatch = Stopwatch()..start();
     final originalWidth = decodedImage.width;
     final originalHeight = decodedImage.height;
     final inputSize = AppConstants.modelInputSize;
@@ -170,6 +246,7 @@ class ModelService {
     final rightPad = inputSize - resizedWidth - leftPad;
     final bottomPad = inputSize - resizedHeight - topPad;
 
+    final resizeStopwatch = Stopwatch()..start();
     final resized = img.copyResize(
       decodedImage,
       width: resizedWidth,
@@ -184,7 +261,10 @@ class ModelService {
     );
     img.fill(canvas, color: img.ColorRgb8(114, 114, 114));
     img.compositeImage(canvas, resized, dstX: leftPad, dstY: topPad);
+    resizeStopwatch.stop();
+    timings.resizeLetterboxMicros = resizeStopwatch.elapsedMicroseconds;
 
+    final tensorStopwatch = Stopwatch()..start();
     final flatInput = Float32List(inputSize * inputSize * 3);
     var tensorIndex = 0;
     var minValue = double.infinity;
@@ -207,8 +287,10 @@ class ModelService {
     }
 
     final inputTensor = flatInput.reshape<double>(_expectedInputShape);
+    tensorStopwatch.stop();
+    timings.tensorFillMicros = tensorStopwatch.elapsedMicroseconds;
 
-    if (kDebugMode) {
+    if (_shouldVerboseLog) {
       debugPrint(
         'Preprocess: shape=$_expectedInputShape '
         'range=[${minValue.toStringAsFixed(4)}, ${maxValue.toStringAsFixed(4)}] '
@@ -216,6 +298,8 @@ class ModelService {
         'pad=($leftPad,$topPad,$rightPad,$bottomPad)',
       );
     }
+    preprocessStopwatch.stop();
+    timings.preprocessMicros = preprocessStopwatch.elapsedMicroseconds;
 
     return _PreprocessedImage(
       inputTensor: inputTensor,
@@ -239,7 +323,7 @@ class ModelService {
       rawOutputs[index] = _createTensorBuffer(shape);
     }
 
-    if (kDebugMode) {
+    if (_shouldVerboseLog) {
       debugPrint(
         'Prepared output buffers: '
         '${shapes.entries.map((entry) => '${entry.key}:${entry.value}').join(', ')}',
@@ -287,8 +371,13 @@ class ModelService {
     required _PreprocessMetadata metadata,
   }) {
     final candidates = <_SegmentationCandidate>[];
-    final topRawCandidates = <_DebugCandidate>[];
-    final topThresholdedCandidates = <_DebugCandidate>[];
+    final collectDebugCandidates = _shouldVerboseLog;
+    final topRawCandidates = collectDebugCandidates
+        ? <_DebugCandidate>[]
+        : null;
+    final topThresholdedCandidates = collectDebugCandidates
+        ? <_DebugCandidate>[]
+        : null;
     var invalidBoxes = 0;
 
     for (var anchor = 0; anchor < _candidateCount; anchor++) {
@@ -303,14 +392,16 @@ class ModelService {
         }
       }
 
-      _pushDebugCandidate(
-        topRawCandidates,
-        _DebugCandidate(
-          anchor: anchor,
-          classIndex: bestClass,
-          confidence: bestScore,
-        ),
-      );
+      if (collectDebugCandidates) {
+        _pushDebugCandidate(
+          topRawCandidates!,
+          _DebugCandidate(
+            anchor: anchor,
+            classIndex: bestClass,
+            confidence: bestScore,
+          ),
+        );
+      }
 
       if (!_isValidClassIndex(bestClass) ||
           bestScore <= AppConstants.confidenceThreshold) {
@@ -353,17 +444,19 @@ class ModelService {
         maskCoefficients: maskCoefficients,
       );
       candidates.add(candidate);
-      _pushDebugCandidate(
-        topThresholdedCandidates,
-        _DebugCandidate(
-          anchor: anchor,
-          classIndex: bestClass,
-          confidence: bestScore,
-        ),
-      );
+      if (collectDebugCandidates) {
+        _pushDebugCandidate(
+          topThresholdedCandidates!,
+          _DebugCandidate(
+            anchor: anchor,
+            classIndex: bestClass,
+            confidence: bestScore,
+          ),
+        );
+      }
     }
 
-    if (kDebugMode) {
+    if (collectDebugCandidates) {
       debugPrint(
         'Raw candidates=$_candidateCount '
         'afterThreshold=${candidates.length} '
@@ -371,11 +464,11 @@ class ModelService {
       );
       _logDebugCandidates(
         label: 'Top raw candidates',
-        candidates: topRawCandidates,
+        candidates: topRawCandidates!,
       );
       _logDebugCandidates(
         label: 'Top thresholded candidates',
-        candidates: topThresholdedCandidates,
+        candidates: topThresholdedCandidates!,
       );
     }
 
@@ -500,7 +593,7 @@ class ModelService {
       }
     }
 
-    if (kDebugMode) {
+    if (_shouldVerboseLog) {
       debugPrint('Mask filter kept=${kept.length} dropped=$droppedByMask');
     }
 
@@ -642,7 +735,7 @@ class ModelService {
       }
     }
 
-    if (kDebugMode) {
+    if (_shouldVerboseLog) {
       debugPrint(
         'Raw output tensors: detection=$_expectedDetectionShape '
         'proto=$_expectedProtoShape',
@@ -952,6 +1045,34 @@ class _PreprocessedImage {
 
   final Object inputTensor;
   final _PreprocessMetadata metadata;
+}
+
+class _MutableModelPipelineTimings {
+  int preprocessMicros = 0;
+  int resizeLetterboxMicros = 0;
+  int tensorFillMicros = 0;
+  int inferenceMicros = 0;
+  int candidateParsingMicros = 0;
+  int nmsMicros = 0;
+  int protoExtractionMicros = 0;
+  int maskReconstructionMicros = 0;
+  int postprocessMicros = 0;
+  int totalMicros = 0;
+
+  ModelPipelineTimings toImmutable() {
+    return ModelPipelineTimings(
+      preprocessMicros: preprocessMicros,
+      resizeLetterboxMicros: resizeLetterboxMicros,
+      tensorFillMicros: tensorFillMicros,
+      inferenceMicros: inferenceMicros,
+      candidateParsingMicros: candidateParsingMicros,
+      nmsMicros: nmsMicros,
+      protoExtractionMicros: protoExtractionMicros,
+      maskReconstructionMicros: maskReconstructionMicros,
+      postprocessMicros: postprocessMicros,
+      totalMicros: totalMicros,
+    );
+  }
 }
 
 class _PreprocessMetadata {
