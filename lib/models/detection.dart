@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/material.dart';
 
 enum MaturityClass { immature, mature, overmature, unknown }
@@ -21,13 +22,13 @@ extension MaturityClassX on MaturityClass {
   Color get color {
     switch (this) {
       case MaturityClass.immature:
-        return Colors.amber.shade700;
+        return AppConstants.immatureColor;
       case MaturityClass.mature:
-        return Colors.green.shade700;
+        return AppConstants.matureColor;
       case MaturityClass.overmature:
-        return Colors.red.shade700;
+        return AppConstants.overmatureColor;
       case MaturityClass.unknown:
-        return Colors.blueGrey;
+        return AppConstants.unknownMaturityColor;
     }
   }
 }

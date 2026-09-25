@@ -1,3 +1,4 @@
+import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/screens/about_screen.dart';
 import 'package:calabash_maturity_detection/screens/camera_screen.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
@@ -24,12 +25,12 @@ class HomeScreen extends StatelessWidget {
       ),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(AppConstants.pagePadding),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const _HeroHeader(),
-              const SizedBox(height: 18),
+              const SizedBox(height: AppConstants.sectionSpacing),
               const _CalabashIllustration(),
               const SizedBox(height: 22),
               ElevatedButton.icon(
@@ -58,7 +59,7 @@ class _HeroHeader extends StatelessWidget {
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(AppConstants.cardRadius),
         border: Border.all(color: AppConstants.secondaryLightGreen),
       ),
       child: Column(
@@ -67,47 +68,20 @@ class _HeroHeader extends StatelessWidget {
             AppConstants.appName,
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w900,
-                  color: AppConstants.primaryGreen,
-                ),
+              fontWeight: FontWeight.w900,
+              color: AppConstants.primaryGreen,
+            ),
           ),
           const SizedBox(height: 8),
           Text(
             'Scan a calabash image and get maturity results directly on your phone.',
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: Colors.black.withValues(alpha: 0.70),
-                ),
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            alignment: WrapAlignment.center,
-            spacing: 8,
-            runSpacing: 8,
-            children: const [
-              _MiniChip(icon: Icons.wifi_off_rounded, label: 'Offline'),
-            ],
+            style: Theme.of(
+              context,
+            ).textTheme.bodyLarge?.copyWith(color: AppConstants.softText),
           ),
         ],
       ),
-    );
-  }
-}
-
-class _MiniChip extends StatelessWidget {
-  const _MiniChip({required this.icon, required this.label});
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Chip(
-      avatar: Icon(icon, size: 16, color: AppConstants.primaryGreen),
-      label: Text(label),
-      visualDensity: VisualDensity.compact,
-      side: BorderSide.none,
-      backgroundColor: AppConstants.secondaryLightGreen.withValues(alpha: 0.24),
     );
   }
 }
@@ -126,9 +100,9 @@ class _OfflineBadge extends StatelessWidget {
           'Works offline once installed',
           textAlign: TextAlign.center,
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Colors.black54,
-                fontWeight: FontWeight.w700,
-              ),
+            color: AppConstants.mutedText,
+            fontWeight: FontWeight.w700,
+          ),
         ),
       ],
     );
@@ -154,15 +128,17 @@ class _CalabashIllustration extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          _fruit(Colors.amber.shade700, 'Immature'),
-          _fruit(Colors.green.shade700, 'Mature'),
-          _fruit(Colors.red.shade700, 'Overmature'),
+          _fruit(MaturityClass.immature),
+          _fruit(MaturityClass.mature),
+          _fruit(MaturityClass.overmature),
         ],
       ),
     );
   }
 
-  Widget _fruit(Color color, String label) {
+  Widget _fruit(MaturityClass maturityClass) {
+    final color = maturityClass.color;
+
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -190,7 +166,7 @@ class _CalabashIllustration extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         Text(
-          label,
+          maturityClass.label,
           style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
         ),
       ],

@@ -60,16 +60,16 @@ class CalabashApp extends StatelessWidget {
         color: Colors.white,
         surfaceTintColor: Colors.white,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(AppConstants.cardRadius),
         ),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           backgroundColor: AppConstants.primaryGreen,
           foregroundColor: Colors.white,
-          minimumSize: const Size.fromHeight(54),
+          minimumSize: const Size.fromHeight(AppConstants.buttonHeight),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(AppConstants.cardRadius),
           ),
           textStyle: textTheme.titleMedium?.copyWith(
             fontWeight: FontWeight.w900,
@@ -79,10 +79,10 @@ class CalabashApp extends StatelessWidget {
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
           foregroundColor: AppConstants.primaryGreen,
-          minimumSize: const Size.fromHeight(50),
+          minimumSize: const Size.fromHeight(AppConstants.buttonHeight),
           side: const BorderSide(color: AppConstants.primaryGreen),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(AppConstants.cardRadius),
           ),
         ),
       ),

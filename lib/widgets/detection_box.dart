@@ -1,4 +1,5 @@
 import 'package:calabash_maturity_detection/models/detection.dart';
+import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/material.dart';
 
 class DetectionBox extends StatelessWidget {
@@ -158,7 +159,7 @@ class _DetectionMaskPainter extends CustomPainter {
     }
 
     final fillPaint = Paint()
-      ..color = color.withValues(alpha: 0.20)
+      ..color = color.withValues(alpha: 0.14)
       ..style = PaintingStyle.fill;
     final edgePaint = Paint()
       ..color = color.withValues(alpha: 0.42)
@@ -199,7 +200,10 @@ class _DetectionMaskPainter extends CustomPainter {
       ..color = color.withValues(alpha: 0.18)
       ..style = PaintingStyle.fill;
     canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, const Radius.circular(14)),
+      RRect.fromRectAndRadius(
+        rect,
+        const Radius.circular(AppConstants.cardRadius),
+      ),
       paint,
     );
   }
