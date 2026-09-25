@@ -18,12 +18,12 @@ class CameraScreen extends StatelessWidget {
           appBar: AppBar(title: const Text('Scan Calabash')),
           body: SafeArea(
             child: Padding(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(AppConstants.pagePadding),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   _ScanPanel(isBusy: provider.isBusy),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: AppConstants.sectionSpacing),
                   ElevatedButton.icon(
                     onPressed: provider.isBusy
                         ? null
@@ -32,15 +32,15 @@ class CameraScreen extends StatelessWidget {
                               context,
                             ).push(fadeRoute(const LiveCameraScreen()));
                           },
-                    icon: const Icon(Icons.videocam_rounded),
-                    label: const Text('Live Capture'),
+                    icon: const Icon(Icons.videocam_rounded, size: 20),
+                    label: const Text('Live Detection'),
                   ),
                   const SizedBox(height: 10),
                   OutlinedButton.icon(
                     onPressed: provider.isBusy
                         ? null
                         : () => _scan(context, provider, ImageSource.gallery),
-                    icon: const Icon(Icons.photo_library_rounded),
+                    icon: const Icon(Icons.photo_library_rounded, size: 20),
                     label: const Text('Choose from Gallery'),
                   ),
                   if (provider.errorMessage != null) ...[
@@ -80,7 +80,7 @@ class _ScanPanel extends StatelessWidget {
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(AppConstants.cardRadius),
         border: Border.all(color: AppConstants.secondaryLightGreen),
       ),
       child: Column(
@@ -89,14 +89,12 @@ class _ScanPanel extends StatelessWidget {
             isBusy
                 ? Icons.analytics_rounded
                 : Icons.center_focus_strong_rounded,
-            size: 52,
+            size: 44,
             color: AppConstants.primaryGreen,
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppConstants.smallSpacing),
           Text(
-            isBusy
-                ? 'Analyzing fruit maturity...'
-                : 'Start live detection or choose an image',
+            isBusy ? 'Analyzing image...' : 'Scan a Calabash Fruit',
             textAlign: TextAlign.center,
             style: Theme.of(
               context,
@@ -104,11 +102,11 @@ class _ScanPanel extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            'Use good lighting and keep the fruit visible inside the frame.',
+            'Use your camera or choose an image from your gallery.',
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: Colors.black.withValues(alpha: 0.60),
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: AppConstants.mutedText),
           ),
           if (isBusy) ...[
             const SizedBox(height: 16),
@@ -130,13 +128,16 @@ class _ErrorBanner extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.red.shade50,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.red.shade100),
+        color: AppConstants.errorSurface,
+        borderRadius: BorderRadius.circular(AppConstants.cardRadius),
+        border: Border.all(color: AppConstants.errorBorder),
       ),
       child: Row(
         children: [
-          Icon(Icons.error_outline_rounded, color: Colors.red.shade700),
+          const Icon(
+            Icons.error_outline_rounded,
+            color: AppConstants.errorColor,
+          ),
           const SizedBox(width: 10),
           Expanded(child: Text(message)),
         ],

@@ -1,12 +1,9 @@
 import 'package:calabash_maturity_detection/models/detection.dart';
+import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/material.dart';
 
 class ResultCard extends StatelessWidget {
-  const ResultCard({
-    super.key,
-    required this.detection,
-    required this.index,
-  });
+  const ResultCard({super.key, required this.detection, required this.index});
 
   final Detection detection;
   final int index;
@@ -17,7 +14,7 @@ class ResultCard extends StatelessWidget {
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(AppConstants.compactCardPadding),
         child: Row(
           children: [
             CircleAvatar(
@@ -34,16 +31,23 @@ class ResultCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    detection.maturityClass.label,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w900,
-                        ),
+                    'Fruit $index',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppConstants.mutedText,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                   Text(
-                    'Confidence ${(detection.confidence * 100).toStringAsFixed(0)}%',
+                    detection.maturityClass.label,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  Text(
+                    '${(detection.confidence * 100).toStringAsFixed(0)}% AI confidence',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Colors.black.withValues(alpha: 0.60),
-                        ),
+                      color: AppConstants.mutedText,
+                    ),
                   ),
                 ],
               ),

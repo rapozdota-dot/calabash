@@ -21,4 +21,24 @@ class AppConstants {
   static const Color secondaryLightGreen = Color(0xFFA5D6A7);
   static const Color accentBrown = Color(0xFF6D4C41);
   static const Color background = Color(0xFFF5F7F2);
+  static const Color immatureColor = Color(0xFFFFA000);
+  static const Color matureColor = Color(0xFF388E3C);
+  static const Color overmatureColor = Color(0xFFD32F2F);
+  static const Color unknownMaturityColor = Color(0xFF607D8B);
+  static const Color mutedText = Color(0xFF687366);
+  static const Color softText = Color(0xFF4E5B4D);
+  static const Color errorColor = Color(0xFFC62828);
+  static const Color errorSurface = Color(0xFFFFEBEE);
+  static const Color errorBorder = Color(0xFFFFCDD2);
+  static const Color overlayScrim = Color(0x94000000);
+
+  static const double pagePadding = 20;
+  static const double resultPagePadding = 16;
+  static const double cardPadding = 16;
+  static const double compactCardPadding = 14;
+  static const double sectionSpacing = 14;
+  static const double smallSpacing = 8;
+  static const double cardRadius = 8;
+  static const double overlayRadius = 8;
+  static const double buttonHeight = 54;
 }

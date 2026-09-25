@@ -10,7 +10,7 @@ class AboutScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('About')),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(AppConstants.pagePadding),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -23,13 +23,13 @@ class AboutScreen extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                'Calabash Maturity Detection uses deep learning and computer vision to assist farmers in determining optimal harvest time.',
+                'Calabash Maturity Detection uses deep learning and computer vision to assist users in assessing the maturity stage of calabash fruits.',
                 style: Theme.of(context).textTheme.bodyLarge,
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: AppConstants.sectionSpacing),
               Card(
                 child: Padding(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(AppConstants.cardPadding),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -38,27 +38,27 @@ class AboutScreen extends StatelessWidget {
                       const Text(
                         'This app supports faster and more accurate field decisions by classifying calabash fruits into Immature, Mature, and Overmature stages.',
                       ),
-                      const SizedBox(height: 14),
+                      const SizedBox(height: AppConstants.sectionSpacing),
                       _sectionTitle('Research Description'),
                       const SizedBox(height: 4),
                       const Text(
-                        'The system applies a TensorFlow Lite model running directly on-device. It analyzes fruit images, draws detection boxes, and presents maturity summaries with simple harvest recommendations.',
+                        'The system applies a TensorFlow Lite model running directly on-device. It analyzes calabash images, identifies individual fruits using instance segmentation, and displays their predicted maturity stages.',
                       ),
-                      const SizedBox(height: 14),
+                      const SizedBox(height: AppConstants.sectionSpacing),
                       _sectionTitle('Developers'),
                       const SizedBox(height: 4),
                       const Text(
-                        'Research Team: Ralph Laurenz G. Medino\nCarlo Bino\nMaxine Emnas\n Darren Zuniega\nInstitution: Leyte Normal University',
+                        'Ralph Laurenz G. Medino\nMaxine Grace C. Emnas\nJohn Carlo M. Bino\nDarren A. Zuniega\n\nInstitution: Leyte Normal University',
                       ),
                     ],
                   ),
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: AppConstants.sectionSpacing),
               Card(
                 color: AppConstants.secondaryLightGreen.withValues(alpha: 0.24),
                 child: const Padding(
-                  padding: EdgeInsets.all(16),
+                  padding: EdgeInsets.all(AppConstants.cardPadding),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [

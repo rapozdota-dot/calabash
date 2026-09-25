@@ -45,7 +45,7 @@ class _LiveCameraView extends StatelessWidget {
       case LiveCameraStatus.permissionDenied:
         return _PermissionMessage(
           icon: Icons.videocam_off_rounded,
-          title: 'Camera permission is required to use Live Capture.',
+          title: 'Camera permission is required to use Live Detection.',
           buttonLabel: 'Try Again',
           onPressed: provider.retryPermission,
         );
@@ -53,7 +53,7 @@ class _LiveCameraView extends StatelessWidget {
         return _PermissionMessage(
           icon: Icons.settings_rounded,
           title:
-              'Camera access is disabled. Enable it in Settings to use Live Capture.',
+              'Camera access is disabled. Enable it in Settings to use Live Detection.',
           buttonLabel: 'Open Settings',
           onPressed: provider.openSettings,
         );
@@ -118,9 +118,9 @@ class _LivePreview extends StatelessWidget {
                 ),
                 if (provider.shouldShowNoCalabash) const _NoCalabashOverlay(),
                 Positioned(
-                  left: 14,
-                  right: 14,
-                  bottom: 14,
+                  left: AppConstants.compactCardPadding,
+                  right: AppConstants.compactCardPadding,
+                  bottom: AppConstants.compactCardPadding,
                   child: _LiveStatusBar(
                     isProcessing: provider.isProcessingFrame,
                     hasDetections: provider.liveDetections.isNotEmpty,
@@ -193,8 +193,8 @@ class _LivePreview extends StatelessWidget {
   Color _colorFor(LiveDetection detection) {
     return switch (detection.confidenceTier) {
       LiveConfidenceTier.normal => detection.detection.maturityClass.color,
-      LiveConfidenceTier.weak => Colors.blueGrey.shade700,
-      LiveConfidenceTier.low => Colors.orange.shade800,
+      LiveConfidenceTier.weak => AppConstants.unknownMaturityColor,
+      LiveConfidenceTier.low => AppConstants.immatureColor,
     };
   }
 }
@@ -209,7 +209,7 @@ class _LiveLoadingState extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           CircularProgressIndicator(),
-          SizedBox(height: 14),
+          SizedBox(height: AppConstants.sectionSpacing),
           Text(
             'Starting live detection...',
             style: TextStyle(fontWeight: FontWeight.w800),
@@ -242,7 +242,7 @@ class _PermissionMessage extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(icon, size: 56, color: AppConstants.primaryGreen),
-            const SizedBox(height: 14),
+            const SizedBox(height: AppConstants.sectionSpacing),
             Text(
               title,
               textAlign: TextAlign.center,
@@ -250,7 +250,7 @@ class _PermissionMessage extends StatelessWidget {
                 context,
               ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
             ),
-            const SizedBox(height: 18),
+            const SizedBox(height: AppConstants.sectionSpacing),
             ElevatedButton(onPressed: onPressed, child: Text(buttonLabel)),
           ],
         ),
@@ -267,10 +267,13 @@ class _NoCalabashOverlay extends StatelessWidget {
     return Center(
       child: Container(
         margin: const EdgeInsets.all(24),
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 18,
+          vertical: AppConstants.cardPadding,
+        ),
         decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.58),
-          borderRadius: BorderRadius.circular(8),
+          color: AppConstants.overlayScrim,
+          borderRadius: BorderRadius.circular(AppConstants.overlayRadius),
           border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
         ),
         child: Column(
@@ -279,7 +282,7 @@ class _NoCalabashOverlay extends StatelessWidget {
             const Icon(Icons.search_off_rounded, color: Colors.white, size: 34),
             const SizedBox(height: 8),
             Text(
-              'No Calabash Detected',
+              'No calabash detected',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 color: Colors.white,
@@ -291,7 +294,7 @@ class _NoCalabashOverlay extends StatelessWidget {
               'Point the camera toward a calabash fruit.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.white.withValues(alpha: 0.82),
+                color: Colors.white.withValues(alpha: 0.84),
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -320,29 +323,30 @@ class _LiveStatusBar extends StatelessWidget {
         (isProcessing
             ? 'Analyzing...'
             : hasDetections
-            ? 'Live detection active'
+            ? 'Calabash detected'
             : 'Waiting for calabash');
+    final icon = errorMessage != null
+        ? Icons.error_outline_rounded
+        : isProcessing
+        ? Icons.autorenew_rounded
+        : hasDetections
+        ? Icons.check_circle_rounded
+        : Icons.sensors_rounded;
 
     return Align(
       alignment: Alignment.bottomCenter,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.58),
-          borderRadius: BorderRadius.circular(8),
+          color: AppConstants.overlayScrim,
+          borderRadius: BorderRadius.circular(AppConstants.overlayRadius),
           border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
         ),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                errorMessage == null
-                    ? Icons.sensors_rounded
-                    : Icons.error_outline_rounded,
-                size: 18,
-                color: Colors.white,
-              ),
+              Icon(icon, size: 18, color: Colors.white),
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
