@@ -16,6 +16,9 @@ class AppConstants {
   static const int liveStableClassFrames = 2;
   static const double liveTrackIouThreshold = 0.20;
   static const double liveTrackCenterDistanceThreshold = 0.18;
+  static const Duration liveInferenceMinInterval = Duration(milliseconds: 150);
+  static const Duration liveOverlayStaleTimeout = Duration(milliseconds: 700);
+  static const Duration liveResultMaxAge = Duration(milliseconds: 1200);
 
   static const Color primaryGreen = Color(0xFF2E7D32);
   static const Color secondaryLightGreen = Color(0xFFA5D6A7);

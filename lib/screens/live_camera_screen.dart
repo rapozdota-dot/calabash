@@ -26,18 +26,25 @@ class _LiveCameraView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<LiveCameraProvider>(
-      builder: (context, provider, child) {
-        return Scaffold(
-          appBar: AppBar(title: const Text('Live Detection')),
-          body: SafeArea(child: _bodyFor(context, provider)),
-        );
-      },
+    final status = context.select<LiveCameraProvider, LiveCameraStatus>(
+      (provider) => provider.status,
+    );
+    final errorMessage = context.select<LiveCameraProvider, String?>(
+      (provider) => provider.errorMessage,
+    );
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Live Detection')),
+      body: SafeArea(child: _bodyFor(context, status, errorMessage)),
     );
   }
 
-  Widget _bodyFor(BuildContext context, LiveCameraProvider provider) {
-    switch (provider.status) {
+  Widget _bodyFor(
+    BuildContext context,
+    LiveCameraStatus status,
+    String? errorMessage,
+  ) {
+    switch (status) {
       case LiveCameraStatus.initial:
       case LiveCameraStatus.requestingPermission:
       case LiveCameraStatus.initializingCamera:
@@ -47,7 +54,7 @@ class _LiveCameraView extends StatelessWidget {
           icon: Icons.videocam_off_rounded,
           title: 'Camera permission is required to use Live Detection.',
           buttonLabel: 'Try Again',
-          onPressed: provider.retryPermission,
+          onPressed: context.read<LiveCameraProvider>().retryPermission,
         );
       case LiveCameraStatus.permissionPermanentlyDenied:
         return _PermissionMessage(
@@ -55,29 +62,32 @@ class _LiveCameraView extends StatelessWidget {
           title:
               'Camera access is disabled. Enable it in Settings to use Live Detection.',
           buttonLabel: 'Open Settings',
-          onPressed: provider.openSettings,
+          onPressed: context.read<LiveCameraProvider>().openSettings,
         );
       case LiveCameraStatus.cameraError:
         return _PermissionMessage(
           icon: Icons.error_outline_rounded,
-          title: provider.errorMessage ?? 'Camera could not be started.',
+          title: errorMessage ?? 'Camera could not be started.',
           buttonLabel: 'Try Again',
-          onPressed: provider.retryPermission,
+          onPressed: context.read<LiveCameraProvider>().retryPermission,
         );
       case LiveCameraStatus.cameraReady:
-        return _LivePreview(provider: provider);
+        return const _LivePreview();
     }
   }
 }
 
 class _LivePreview extends StatelessWidget {
-  const _LivePreview({required this.provider});
-
-  final LiveCameraProvider provider;
+  const _LivePreview();
 
   @override
   Widget build(BuildContext context) {
-    final controller = provider.cameraController;
+    final controller = context.select<LiveCameraProvider, CameraController?>(
+      (provider) => provider.cameraController,
+    );
+    final latestFrameSize = context.select<LiveCameraProvider, Size?>(
+      (provider) => provider.latestFrameSize,
+    );
     if (controller == null || !controller.value.isInitialized) {
       return const _LiveLoadingState();
     }
@@ -91,7 +101,7 @@ class _LivePreview extends StatelessWidget {
             constraints.maxHeight,
           );
           final sourceSize =
-              provider.latestFrameSize ??
+              latestFrameSize ??
               _previewSourceSize(controller) ??
               containerSize;
           final previewRect = _coverRect(sourceSize, containerSize);
@@ -101,32 +111,10 @@ class _LivePreview extends StatelessWidget {
               children: [
                 Positioned.fromRect(
                   rect: previewRect,
-                  child: CameraPreview(controller),
+                  child: RepaintBoundary(child: CameraPreview(controller)),
                 ),
-                ...provider.liveDetections.asMap().entries.map(
-                  (entry) => DetectionBox(
-                    detection: entry.value.detection,
-                    fruitNumber: entry.key + 1,
-                    imageWidth: previewRect.width,
-                    imageHeight: previewRect.height,
-                    offsetX: previewRect.left,
-                    offsetY: previewRect.top,
-                    label: _labelFor(entry.key + 1, entry.value),
-                    subtitle: _subtitleFor(entry.value),
-                    colorOverride: _colorFor(entry.value),
-                  ),
-                ),
-                if (provider.shouldShowNoCalabash) const _NoCalabashOverlay(),
-                Positioned(
-                  left: AppConstants.compactCardPadding,
-                  right: AppConstants.compactCardPadding,
-                  bottom: AppConstants.compactCardPadding,
-                  child: _LiveStatusBar(
-                    isProcessing: provider.isProcessingFrame,
-                    hasDetections: provider.liveDetections.isNotEmpty,
-                    errorMessage: provider.errorMessage,
-                  ),
-                ),
+                _LiveDetectionOverlay(previewRect: previewRect),
+                const _LiveStatusBarHost(),
               ],
             ),
           );
@@ -171,6 +159,45 @@ class _LivePreview extends StatelessWidget {
       height,
     );
   }
+}
+
+class _LiveDetectionOverlay extends StatelessWidget {
+  const _LiveDetectionOverlay({required this.previewRect});
+
+  final Rect previewRect;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.select<LiveCameraProvider, _LiveOverlayState>(
+      (provider) => _LiveOverlayState(
+        detections: provider.liveDetections,
+        shouldShowNoCalabash: provider.shouldShowNoCalabash,
+      ),
+    );
+
+    return Positioned.fill(
+      child: RepaintBoundary(
+        child: Stack(
+          children: [
+            ...state.detections.asMap().entries.map(
+              (entry) => DetectionBox(
+                detection: entry.value.detection,
+                fruitNumber: entry.key + 1,
+                imageWidth: previewRect.width,
+                imageHeight: previewRect.height,
+                offsetX: previewRect.left,
+                offsetY: previewRect.top,
+                label: _labelFor(entry.key + 1, entry.value),
+                subtitle: _subtitleFor(entry.value),
+                colorOverride: _colorFor(entry.value),
+              ),
+            ),
+            if (state.shouldShowNoCalabash) const _NoCalabashOverlay(),
+          ],
+        ),
+      ),
+    );
+  }
 
   String _labelFor(int number, LiveDetection detection) {
     return switch (detection.confidenceTier) {
@@ -197,6 +224,78 @@ class _LivePreview extends StatelessWidget {
       LiveConfidenceTier.low => AppConstants.immatureColor,
     };
   }
+}
+
+class _LiveStatusBarHost extends StatelessWidget {
+  const _LiveStatusBarHost();
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.select<LiveCameraProvider, _LiveStatusState>(
+      (provider) => _LiveStatusState(
+        isProcessing: provider.isProcessingFrame,
+        hasDetections: provider.liveDetections.isNotEmpty,
+        errorMessage: provider.errorMessage,
+      ),
+    );
+
+    return Positioned(
+      left: AppConstants.compactCardPadding,
+      right: AppConstants.compactCardPadding,
+      bottom: AppConstants.compactCardPadding,
+      child: _LiveStatusBar(
+        isProcessing: state.isProcessing,
+        hasDetections: state.hasDetections,
+        errorMessage: state.errorMessage,
+      ),
+    );
+  }
+}
+
+class _LiveOverlayState {
+  const _LiveOverlayState({
+    required this.detections,
+    required this.shouldShowNoCalabash,
+  });
+
+  final List<LiveDetection> detections;
+  final bool shouldShowNoCalabash;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is _LiveOverlayState &&
+            identical(other.detections, detections) &&
+            other.shouldShowNoCalabash == shouldShowNoCalabash;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(identityHashCode(detections), shouldShowNoCalabash);
+}
+
+class _LiveStatusState {
+  const _LiveStatusState({
+    required this.isProcessing,
+    required this.hasDetections,
+    required this.errorMessage,
+  });
+
+  final bool isProcessing;
+  final bool hasDetections;
+  final String? errorMessage;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is _LiveStatusState &&
+            other.isProcessing == isProcessing &&
+            other.hasDetections == hasDetections &&
+            other.errorMessage == errorMessage;
+  }
+
+  @override
+  int get hashCode => Object.hash(isProcessing, hasDetections, errorMessage);
 }
 
 class _LiveLoadingState extends StatelessWidget {

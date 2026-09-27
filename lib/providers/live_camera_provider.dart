@@ -25,6 +25,8 @@ enum LiveCameraStatus {
 
 enum LiveConfidenceTier { normal, weak, low }
 
+enum _PendingFrameReason { busy, cadence }
+
 class LiveDetection {
   const LiveDetection({required this.detection, required this.confidenceTier});
 
@@ -45,9 +47,13 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<_StableDetectionTrack> _tracks = [];
   Size? _latestFrameSize;
   _LiveCameraFrame? _pendingFrame;
-  _LiveFrameTelemetry? _latestFrameTelemetry;
+  Timer? _inferenceCadenceTimer;
+  Timer? _overlayExpirationTimer;
   final _performanceTracker = _LivePerformanceTracker();
   int _nextFrameId = 1;
+  int? _lastPublishedFrameId;
+  DateTime? _lastInferenceStartedAt;
+  DateTime? _lastDetectionPublishedAt;
   String? _errorMessage;
   bool _isInitializingSession = false;
   bool _isProcessingFrame = false;
@@ -238,18 +244,93 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       camera: activeController.description,
       deviceOrientation: activeController.value.deviceOrientation,
     );
-
     if (_isProcessingFrame) {
-      final replacedExistingFrame = _pendingFrame != null;
-      _pendingFrame = liveFrame;
-      _performanceTracker.recordFrameStoredWhileBusy(
-        replacedExistingFrame: replacedExistingFrame,
-      );
+      _storeLatestPendingFrame(liveFrame, reason: _PendingFrameReason.busy);
+      _performanceTracker.maybeLog(pendingFrameCount: _pendingFrameCount);
+      return;
+    }
+
+    final cadenceDelay = _remainingInferenceCadenceDelay(capturedAt);
+    if (cadenceDelay > Duration.zero) {
+      _storeLatestPendingFrame(liveFrame, reason: _PendingFrameReason.cadence);
+      _schedulePendingFrameDrain(cadenceDelay);
       _performanceTracker.maybeLog(pendingFrameCount: _pendingFrameCount);
       return;
     }
 
     unawaited(_processFrame(liveFrame));
+  }
+
+  void _storeLatestPendingFrame(
+    _LiveCameraFrame frame, {
+    required _PendingFrameReason reason,
+  }) {
+    final replacedExistingFrame = _pendingFrame != null;
+    _pendingFrame = frame;
+    switch (reason) {
+      case _PendingFrameReason.busy:
+        _performanceTracker.recordFrameStoredWhileBusy(
+          replacedExistingFrame: replacedExistingFrame,
+        );
+        break;
+      case _PendingFrameReason.cadence:
+        _performanceTracker.recordFrameDelayedByCadence(
+          replacedExistingFrame: replacedExistingFrame,
+        );
+        break;
+    }
+  }
+
+  Duration _remainingInferenceCadenceDelay(DateTime now) {
+    final lastInferenceStartedAt = _lastInferenceStartedAt;
+    if (lastInferenceStartedAt == null) {
+      return Duration.zero;
+    }
+
+    final elapsed = now.difference(lastInferenceStartedAt);
+    if (elapsed >= AppConstants.liveInferenceMinInterval) {
+      return Duration.zero;
+    }
+    return AppConstants.liveInferenceMinInterval - elapsed;
+  }
+
+  void _schedulePendingFrameDrain(Duration delay) {
+    if (_inferenceCadenceTimer?.isActive == true) {
+      return;
+    }
+
+    _inferenceCadenceTimer = Timer(delay, _drainPendingFrame);
+  }
+
+  void _drainPendingFrame() {
+    _inferenceCadenceTimer?.cancel();
+    _inferenceCadenceTimer = null;
+
+    if (_isDisposed || _isProcessingFrame) {
+      return;
+    }
+
+    final frame = _pendingFrame;
+    if (frame == null) {
+      return;
+    }
+
+    final activeController = _cameraController;
+    if (activeController == null || !activeController.value.isInitialized) {
+      _pendingFrame = null;
+      _performanceTracker.recordFrameDropped();
+      _performanceTracker.maybeLog(pendingFrameCount: _pendingFrameCount);
+      return;
+    }
+
+    final cadenceDelay = _remainingInferenceCadenceDelay(DateTime.now());
+    if (cadenceDelay > Duration.zero) {
+      _schedulePendingFrameDrain(cadenceDelay);
+      return;
+    }
+
+    _pendingFrame = null;
+    unawaited(_processFrame(frame));
   }
 
   Future<void> _processFrame(_LiveCameraFrame frame) async {
@@ -260,21 +341,21 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     _isProcessingFrame = true;
+    _safeNotifyListeners();
 
-    var shouldNotify = false;
     try {
       final inferenceStartAt = DateTime.now();
-      final rotationDegrees = _rotationDegrees(
-        frame.camera,
-        frame.deviceOrientation,
-      );
-
       final worker = _inferenceWorker;
       if (worker == null || !worker.isReady) {
         _performanceTracker.recordFrameDropped();
         return;
       }
 
+      _lastInferenceStartedAt = inferenceStartAt;
+      final rotationDegrees = _rotationDegrees(
+        frame.camera,
+        frame.deviceOrientation,
+      );
       final workerFrame = LiveInferenceFrame.fromCameraImage(
         frameId: frame.id,
         image: frame.image,
@@ -289,29 +370,49 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       final publishAt = DateTime.now();
-      _latestFrameTelemetry = _LiveFrameTelemetry(
+      final frameTelemetry = _LiveFrameTelemetry(
         frameId: frame.id,
         capturedAt: frame.capturedAt,
         inferenceStartAt: inferenceStartAt,
         inferenceEndAt: inferenceEndAt,
         publishedAt: publishAt,
       );
-      _latestFrameSize = Size(
-        modelResult.imageWidth.toDouble(),
-        modelResult.imageHeight.toDouble(),
-      );
-      _liveDetections = _stabilizeDetections(modelResult.toDetections());
-      _hasProcessedFrame = true;
-      _errorMessage = null;
-      shouldNotify = true;
       _performanceTracker.recordFrameProcessed(
         _LiveFramePerformanceSample(
-          frameTelemetry: _latestFrameTelemetry!,
+          frameTelemetry: frameTelemetry,
           conversionTiming: modelResult.conversionTiming,
           modelTimings: modelResult.modelTimings,
           frameTransferMicros: modelResult.frameTransferMicros,
           backendInfo: modelResult.backendInfo,
         ),
+      );
+
+      if (!_shouldPublishResult(frame, modelResult, publishAt)) {
+        _performanceTracker.recordStaleResultSkipped();
+        _expireOverlayIfStale(publishAt);
+        return;
+      }
+
+      final publishStopwatch = Stopwatch()..start();
+      final detections = modelResult.toDetections();
+      _latestFrameSize = Size(
+        modelResult.imageWidth.toDouble(),
+        modelResult.imageHeight.toDouble(),
+      );
+      _lastPublishedFrameId = modelResult.frameId;
+      _hasProcessedFrame = true;
+      _errorMessage = null;
+
+      if (detections.isEmpty) {
+        _clearLiveDetections(cancelExpiration: true);
+      } else {
+        _liveDetections = _stabilizeDetections(detections);
+        _lastDetectionPublishedAt = publishAt;
+        _scheduleOverlayExpiration(publishAt);
+      }
+      publishStopwatch.stop();
+      _performanceTracker.recordResultPublished(
+        publishStopwatch.elapsedMicroseconds,
       );
     } catch (error) {
       if (kDebugMode) {
@@ -320,26 +421,82 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (!_isDisposed) {
         _hasProcessedFrame = true;
         _errorMessage = 'Live detection failed. Keep the camera steady.';
-        shouldNotify = true;
       }
     } finally {
       if (!_isDisposed) {
-        final nextFrame = _pendingFrame;
-        _pendingFrame = null;
         _isProcessingFrame = false;
         _performanceTracker.maybeLog(pendingFrameCount: _pendingFrameCount);
-        if (shouldNotify) {
-          _safeNotifyListeners();
-        }
-        if (nextFrame != null) {
+        _safeNotifyListeners();
+        if (_pendingFrame != null) {
           if (_cameraController == activeController) {
-            unawaited(_processFrame(nextFrame));
+            _drainPendingFrame();
           } else {
+            _pendingFrame = null;
             _performanceTracker.recordFrameDropped();
           }
         }
       }
     }
+  }
+
+  bool _shouldPublishResult(
+    _LiveCameraFrame frame,
+    LiveInferenceResult result,
+    DateTime publishAt,
+  ) {
+    final lastPublishedFrameId = _lastPublishedFrameId;
+    if (result.frameId != frame.id ||
+        (lastPublishedFrameId != null &&
+            result.frameId <= lastPublishedFrameId)) {
+      return false;
+    }
+
+    final resultAge = publishAt.difference(frame.capturedAt);
+    return resultAge <= AppConstants.liveResultMaxAge;
+  }
+
+  bool _clearLiveDetections({required bool cancelExpiration}) {
+    final hadVisibleDetections =
+        _liveDetections.isNotEmpty || _tracks.isNotEmpty;
+    _liveDetections = [];
+    _tracks = [];
+    _lastDetectionPublishedAt = null;
+
+    if (cancelExpiration) {
+      _overlayExpirationTimer?.cancel();
+      _overlayExpirationTimer = null;
+    }
+
+    return hadVisibleDetections;
+  }
+
+  void _scheduleOverlayExpiration(DateTime detectionPublishedAt) {
+    _overlayExpirationTimer?.cancel();
+    _overlayExpirationTimer = Timer(AppConstants.liveOverlayStaleTimeout, () {
+      if (_isDisposed || _lastDetectionPublishedAt != detectionPublishedAt) {
+        return;
+      }
+
+      if (_clearLiveDetections(cancelExpiration: false)) {
+        _performanceTracker.recordOverlayExpired();
+        _safeNotifyListeners();
+      }
+    });
+  }
+
+  bool _expireOverlayIfStale(DateTime now) {
+    final lastDetectionPublishedAt = _lastDetectionPublishedAt;
+    if (lastDetectionPublishedAt == null ||
+        now.difference(lastDetectionPublishedAt) <
+            AppConstants.liveOverlayStaleTimeout) {
+      return false;
+    }
+
+    final didClear = _clearLiveDetections(cancelExpiration: true);
+    if (didClear) {
+      _performanceTracker.recordOverlayExpired();
+    }
+    return didClear;
   }
 
   void _handleFrameTimings(List<FrameTiming> timings) {
@@ -483,14 +640,16 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cameraController = null;
     _inferenceWorker = null;
     _pendingFrame = null;
+    _inferenceCadenceTimer?.cancel();
+    _inferenceCadenceTimer = null;
     _isProcessingFrame = false;
     _performanceTracker.reset();
 
     if (!keepLiveState) {
-      _liveDetections = [];
-      _tracks = [];
+      _clearLiveDetections(cancelExpiration: true);
       _latestFrameSize = null;
-      _latestFrameTelemetry = null;
+      _lastPublishedFrameId = null;
+      _lastInferenceStartedAt = null;
       _hasProcessedFrame = false;
       _errorMessage = null;
     }
@@ -672,7 +831,10 @@ class _LivePerformanceTracker {
   int _framesReceived = 0;
   int _framesProcessed = 0;
   int _framesReplaced = 0;
+  int _framesDelayedByCadence = 0;
   int _framesDropped = 0;
+  int _staleResultsSkipped = 0;
+  int _overlaysExpired = 0;
   int? _lastProcessedFrameId;
   LiveInferenceBackendInfo? _backendInfo;
   int _uiFrameCount = 0;
@@ -692,6 +854,7 @@ class _LivePerformanceTracker {
   final _TimingAccumulator _postprocess = _TimingAccumulator();
   final _TimingAccumulator _totalAi = _TimingAccumulator();
   final _TimingAccumulator _resultAge = _TimingAccumulator();
+  final _TimingAccumulator _resultPublication = _TimingAccumulator();
   final _TimingAccumulator _uiBuild = _TimingAccumulator();
   final _TimingAccumulator _uiRaster = _TimingAccumulator();
   final _TimingAccumulator _uiTotal = _TimingAccumulator();
@@ -709,8 +872,25 @@ class _LivePerformanceTracker {
     _framesDropped++;
   }
 
+  void recordFrameDelayedByCadence({required bool replacedExistingFrame}) {
+    _framesDelayedByCadence++;
+    if (!replacedExistingFrame) {
+      return;
+    }
+    _framesReplaced++;
+    _framesDropped++;
+  }
+
   void recordFrameDropped() {
     _framesDropped++;
+  }
+
+  void recordStaleResultSkipped() {
+    _staleResultsSkipped++;
+  }
+
+  void recordOverlayExpired() {
+    _overlaysExpired++;
   }
 
   void recordBackendInfo(LiveInferenceBackendInfo backendInfo) {
@@ -756,6 +936,10 @@ class _LivePerformanceTracker {
     _resultAge.add(sample.frameTelemetry.resultAgeMicros);
   }
 
+  void recordResultPublished(int micros) {
+    _resultPublication.add(micros);
+  }
+
   void maybeLog({required int pendingFrameCount}) {
     if (!kDebugMode) {
       return;
@@ -782,7 +966,10 @@ class _LivePerformanceTracker {
       'Frames received: $_framesReceived\n'
       'Frames processed: $_framesProcessed\n'
       'Frames replaced: $_framesReplaced\n'
+      'Frames cadence-delayed: $_framesDelayedByCadence\n'
       'Frames dropped/skipped: $_framesDropped\n'
+      'Stale results skipped: $_staleResultsSkipped\n'
+      'Overlays expired: $_overlaysExpired\n'
       'Pending: $pendingFrameCount\n'
       'Last frame ID: ${_lastProcessedFrameId ?? '-'}\n\n'
       'UI frames: $_uiFrameCount\n'
@@ -803,6 +990,7 @@ class _LivePerformanceTracker {
       'Masks: ${_maskReconstruction.averageMsLabel}\n'
       'Postprocess: ${_postprocess.averageMsLabel}\n'
       'Total AI: ${_totalAi.averageMsLabel}\n'
+      'Result publication: ${_resultPublication.averageMsLabel}\n'
       'Result age: ${_resultAge.averageMsLabel}',
     );
     _resetWindow(now);
@@ -827,7 +1015,10 @@ class _LivePerformanceTracker {
     _framesReceived = 0;
     _framesProcessed = 0;
     _framesReplaced = 0;
+    _framesDelayedByCadence = 0;
     _framesDropped = 0;
+    _staleResultsSkipped = 0;
+    _overlaysExpired = 0;
     _lastProcessedFrameId = null;
     _uiFrameCount = 0;
     _jankyUiFrameCount = 0;
@@ -845,6 +1036,7 @@ class _LivePerformanceTracker {
     _postprocess.reset();
     _totalAi.reset();
     _resultAge.reset();
+    _resultPublication.reset();
     _uiBuild.reset();
     _uiRaster.reset();
     _uiTotal.reset();

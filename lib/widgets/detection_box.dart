@@ -50,6 +50,7 @@ class DetectionBox extends StatelessWidget {
                   detection: detection,
                   color: color,
                 ),
+                isComplex: true,
               ),
             ),
             Positioned(
@@ -166,6 +167,8 @@ class _DetectionMaskPainter extends CustomPainter {
       ..style = PaintingStyle.fill;
     final cellWidth = maskRect.width / mask.width;
     final cellHeight = maskRect.height / mask.height;
+    final fillPath = Path();
+    final edgePath = Path();
 
     for (var y = 0; y < mask.height; y++) {
       for (var x = 0; x < mask.width; x++) {
@@ -179,9 +182,16 @@ class _DetectionMaskPainter extends CustomPainter {
           cellWidth + 0.6,
           cellHeight + 0.6,
         );
-        canvas.drawRect(cell, _isEdge(mask, x, y) ? edgePaint : fillPaint);
+        if (_isEdge(mask, x, y)) {
+          edgePath.addRect(cell);
+        } else {
+          fillPath.addRect(cell);
+        }
       }
     }
+
+    canvas.drawPath(fillPath, fillPaint);
+    canvas.drawPath(edgePath, edgePaint);
   }
 
   void _paintSoftFallback(Canvas canvas, Size size) {
