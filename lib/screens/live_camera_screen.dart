@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:camera/camera.dart';
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/providers/live_camera_provider.dart';
+import 'package:calabash_maturity_detection/providers/live_detection_tracker.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:calabash_maturity_detection/widgets/detection_box.dart';
 import 'package:flutter/material.dart';
@@ -34,7 +35,10 @@ class _LiveCameraView extends StatelessWidget {
     );
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Live Detection')),
+      appBar: AppBar(
+        title: const Text('Live Detection'),
+        actions: const [_TorchAction()],
+      ),
       body: SafeArea(child: _bodyFor(context, status, errorMessage)),
     );
   }
@@ -74,6 +78,50 @@ class _LiveCameraView extends StatelessWidget {
       case LiveCameraStatus.cameraReady:
         return const _LivePreview();
     }
+  }
+}
+
+class _TorchAction extends StatelessWidget {
+  const _TorchAction();
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.select<LiveCameraProvider, _TorchButtonState>(
+      (provider) => _TorchButtonState(
+        isCameraReady: provider.isCameraReady,
+        isTorchOn: provider.isTorchOn,
+        isSettingTorch: provider.isSettingTorch,
+      ),
+    );
+
+    return IconButton(
+      tooltip: state.isTorchOn ? 'Turn flashlight off' : 'Turn flashlight on',
+      onPressed: state.isCameraReady && !state.isSettingTorch
+          ? () => _toggleTorch(context)
+          : null,
+      icon: Icon(
+        state.isTorchOn ? Icons.flash_on_rounded : Icons.flash_off_rounded,
+        color: state.isTorchOn ? AppConstants.secondaryLightGreen : null,
+      ),
+    );
+  }
+
+  Future<void> _toggleTorch(BuildContext context) async {
+    final provider = context.read<LiveCameraProvider>();
+    final success = await provider.toggleTorch();
+    if (!context.mounted || success) {
+      return;
+    }
+
+    final message =
+        provider.lastTorchError ?? 'Flashlight is unavailable on this device.';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 }
 
@@ -180,7 +228,8 @@ class _LiveDetectionOverlay extends StatelessWidget {
         child: Stack(
           children: [
             ...state.detections.asMap().entries.map(
-              (entry) => DetectionBox(
+              (entry) => AnimatedDetectionBox(
+                key: ValueKey<int>(entry.value.trackId),
                 detection: entry.value.detection,
                 fruitNumber: entry.key + 1,
                 imageWidth: previewRect.width,
@@ -190,6 +239,10 @@ class _LiveDetectionOverlay extends StatelessWidget {
                 label: _labelFor(entry.key + 1, entry.value),
                 subtitle: _subtitleFor(entry.value),
                 colorOverride: _colorFor(entry.value),
+                duration: entry.value.animateBounds
+                    ? AppConstants.liveOverlayAnimationDuration
+                    : Duration.zero,
+                curve: AppConstants.liveOverlayAnimationCurve,
               ),
             ),
             if (state.shouldShowNoCalabash) const _NoCalabashOverlay(),
@@ -296,6 +349,30 @@ class _LiveStatusState {
 
   @override
   int get hashCode => Object.hash(isProcessing, hasDetections, errorMessage);
+}
+
+class _TorchButtonState {
+  const _TorchButtonState({
+    required this.isCameraReady,
+    required this.isTorchOn,
+    required this.isSettingTorch,
+  });
+
+  final bool isCameraReady;
+  final bool isTorchOn;
+  final bool isSettingTorch;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is _TorchButtonState &&
+            other.isCameraReady == isCameraReady &&
+            other.isTorchOn == isTorchOn &&
+            other.isSettingTorch == isSettingTorch;
+  }
+
+  @override
+  int get hashCode => Object.hash(isCameraReady, isTorchOn, isSettingTorch);
 }
 
 class _LiveLoadingState extends StatelessWidget {

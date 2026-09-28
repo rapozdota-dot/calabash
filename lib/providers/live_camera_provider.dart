@@ -1,8 +1,7 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
-import 'package:calabash_maturity_detection/models/detection.dart';
+import 'package:calabash_maturity_detection/providers/live_detection_tracker.dart';
 import 'package:calabash_maturity_detection/services/camera_image_converter.dart';
 import 'package:calabash_maturity_detection/services/live_inference_worker.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
@@ -23,16 +22,7 @@ enum LiveCameraStatus {
   cameraError,
 }
 
-enum LiveConfidenceTier { normal, weak, low }
-
 enum _PendingFrameReason { busy, cadence }
-
-class LiveDetection {
-  const LiveDetection({required this.detection, required this.confidenceTier});
-
-  final Detection detection;
-  final LiveConfidenceTier confidenceTier;
-}
 
 class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   LiveCameraProvider() {
@@ -44,11 +34,11 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   LiveInferenceWorker? _inferenceWorker;
   LiveCameraStatus _status = LiveCameraStatus.initial;
   List<LiveDetection> _liveDetections = [];
-  List<_StableDetectionTrack> _tracks = [];
+  final LiveDetectionTracker _detectionTracker = LiveDetectionTracker();
   Size? _latestFrameSize;
   _LiveCameraFrame? _pendingFrame;
   Timer? _inferenceCadenceTimer;
-  Timer? _overlayExpirationTimer;
+  Timer? _overlayEmergencyExpirationTimer;
   final _performanceTracker = _LivePerformanceTracker();
   int _nextFrameId = 1;
   int? _lastPublishedFrameId;
@@ -59,6 +49,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _isProcessingFrame = false;
   bool _hasProcessedFrame = false;
   bool _shouldRestoreOnResume = false;
+  bool _isTorchOn = false;
+  bool _isSettingTorch = false;
+  String? _lastTorchError;
   bool _isDisposed = false;
 
   CameraController? get cameraController => _cameraController;
@@ -68,6 +61,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get errorMessage => _errorMessage;
   bool get isProcessingFrame => _isProcessingFrame;
   bool get hasProcessedFrame => _hasProcessedFrame;
+  bool get isTorchOn => _isTorchOn;
+  bool get isSettingTorch => _isSettingTorch;
+  String? get lastTorchError => _lastTorchError;
   int get _pendingFrameCount => _pendingFrame == null ? 0 : 1;
 
   bool get isCameraReady =>
@@ -92,6 +88,50 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> openSettings() {
     return openAppSettings();
+  }
+
+  Future<bool> toggleTorch() async {
+    if (_isDisposed || _isSettingTorch) {
+      return false;
+    }
+
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) {
+      _lastTorchError = 'Flashlight is available after the camera starts.';
+      _safeNotifyListeners();
+      return false;
+    }
+
+    final nextTorchState = !_isTorchOn;
+    _isSettingTorch = true;
+    _lastTorchError = null;
+    _safeNotifyListeners();
+
+    final success = await _setTorchMode(
+      controller,
+      enabled: nextTorchState,
+      reportErrors: true,
+    );
+
+    if (_isDisposed) {
+      return false;
+    }
+    if (_cameraController != controller) {
+      _isSettingTorch = false;
+      _isTorchOn = false;
+      _safeNotifyListeners();
+      return false;
+    }
+
+    _isSettingTorch = false;
+    if (success) {
+      _isTorchOn = nextTorchState;
+    } else if (nextTorchState) {
+      _isTorchOn = false;
+      await _setTorchMode(controller, enabled: false, reportErrors: false);
+    }
+    _safeNotifyListeners();
+    return success;
   }
 
   Future<void> _ensurePermissionAndStart({
@@ -167,6 +207,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       try {
         await controller.setFlashMode(FlashMode.off);
+        _isTorchOn = false;
+        _lastTorchError = null;
       } catch (error) {
         if (kDebugMode) {
           debugPrint('Unable to force flash off for live detection: $error');
@@ -389,7 +431,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       if (!_shouldPublishResult(frame, modelResult, publishAt)) {
         _performanceTracker.recordStaleResultSkipped();
-        _expireOverlayIfStale(publishAt);
+        _expireOverlayIfEmergencyStale(publishAt);
         return;
       }
 
@@ -404,11 +446,14 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       _errorMessage = null;
 
       if (detections.isEmpty) {
-        _clearLiveDetections(cancelExpiration: true);
+        final didClear = _clearLiveDetections(cancelEmergencyExpiration: true);
+        _performanceTracker.recordNoDetectionClear(didClear: didClear);
       } else {
-        _liveDetections = _stabilizeDetections(detections);
+        final update = _detectionTracker.update(detections);
+        _liveDetections = update.detections;
         _lastDetectionPublishedAt = publishAt;
-        _scheduleOverlayExpiration(publishAt);
+        _performanceTracker.recordOverlayRefreshed(update);
+        _scheduleOverlayEmergencyExpiration(publishAt);
       }
       publishStopwatch.stop();
       _performanceTracker.recordResultPublished(
@@ -455,44 +500,47 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     return resultAge <= AppConstants.liveResultMaxAge;
   }
 
-  bool _clearLiveDetections({required bool cancelExpiration}) {
+  bool _clearLiveDetections({required bool cancelEmergencyExpiration}) {
     final hadVisibleDetections =
-        _liveDetections.isNotEmpty || _tracks.isNotEmpty;
+        _liveDetections.isNotEmpty || _detectionTracker.activeTrackCount > 0;
     _liveDetections = [];
-    _tracks = [];
+    _detectionTracker.clear();
     _lastDetectionPublishedAt = null;
 
-    if (cancelExpiration) {
-      _overlayExpirationTimer?.cancel();
-      _overlayExpirationTimer = null;
+    if (cancelEmergencyExpiration) {
+      _overlayEmergencyExpirationTimer?.cancel();
+      _overlayEmergencyExpirationTimer = null;
     }
 
     return hadVisibleDetections;
   }
 
-  void _scheduleOverlayExpiration(DateTime detectionPublishedAt) {
-    _overlayExpirationTimer?.cancel();
-    _overlayExpirationTimer = Timer(AppConstants.liveOverlayStaleTimeout, () {
-      if (_isDisposed || _lastDetectionPublishedAt != detectionPublishedAt) {
-        return;
-      }
+  void _scheduleOverlayEmergencyExpiration(DateTime detectionPublishedAt) {
+    _overlayEmergencyExpirationTimer?.cancel();
+    _overlayEmergencyExpirationTimer = Timer(
+      AppConstants.liveOverlayEmergencyStaleTimeout,
+      () {
+        if (_isDisposed || _lastDetectionPublishedAt != detectionPublishedAt) {
+          return;
+        }
 
-      if (_clearLiveDetections(cancelExpiration: false)) {
-        _performanceTracker.recordOverlayExpired();
-        _safeNotifyListeners();
-      }
-    });
+        if (_clearLiveDetections(cancelEmergencyExpiration: false)) {
+          _performanceTracker.recordOverlayExpired();
+          _safeNotifyListeners();
+        }
+      },
+    );
   }
 
-  bool _expireOverlayIfStale(DateTime now) {
+  bool _expireOverlayIfEmergencyStale(DateTime now) {
     final lastDetectionPublishedAt = _lastDetectionPublishedAt;
     if (lastDetectionPublishedAt == null ||
         now.difference(lastDetectionPublishedAt) <
-            AppConstants.liveOverlayStaleTimeout) {
+            AppConstants.liveOverlayEmergencyStaleTimeout) {
       return false;
     }
 
-    final didClear = _clearLiveDetections(cancelExpiration: true);
+    final didClear = _clearLiveDetections(cancelEmergencyExpiration: true);
     if (didClear) {
       _performanceTracker.recordOverlayExpired();
     }
@@ -501,94 +549,6 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   void _handleFrameTimings(List<FrameTiming> timings) {
     _performanceTracker.recordUiFrameTimings(timings);
-  }
-
-  List<LiveDetection> _stabilizeDetections(List<Detection> detections) {
-    if (detections.isEmpty) {
-      _tracks = [];
-      return [];
-    }
-
-    final oldTracks = _tracks;
-    final usedTrackIndexes = <int>{};
-    final updatedTracks = <_StableDetectionTrack>[];
-    final stabilized = <LiveDetection>[];
-
-    for (final detection in detections) {
-      final matchIndex = _findBestTrackIndex(
-        detection,
-        oldTracks,
-        usedTrackIndexes,
-      );
-
-      final track = matchIndex == null
-          ? _StableDetectionTrack.fromDetection(detection)
-          : oldTracks[matchIndex];
-      if (matchIndex != null) {
-        track.updateWith(detection);
-        usedTrackIndexes.add(matchIndex);
-      }
-
-      updatedTracks.add(track);
-      stabilized.add(
-        LiveDetection(
-          detection: Detection(
-            boundingBox: detection.boundingBox,
-            maturityClass: track.stableClass,
-            confidence: detection.confidence,
-            mask: detection.mask,
-          ),
-          confidenceTier: _confidenceTierFor(detection.confidence),
-        ),
-      );
-    }
-
-    _tracks = updatedTracks;
-    return stabilized;
-  }
-
-  int? _findBestTrackIndex(
-    Detection detection,
-    List<_StableDetectionTrack> tracks,
-    Set<int> usedTrackIndexes,
-  ) {
-    var bestIndex = -1;
-    var bestScore = 0.0;
-
-    for (var index = 0; index < tracks.length; index++) {
-      if (usedTrackIndexes.contains(index)) {
-        continue;
-      }
-
-      final track = tracks[index];
-      final iou = _iou(detection.boundingBox, track.boundingBox);
-      final centerDistance = _centerDistance(
-        detection.boundingBox,
-        track.boundingBox,
-      );
-      final centerScore = 1.0 - centerDistance;
-      final score = math.max(iou, centerScore);
-
-      if (score > bestScore &&
-          (iou >= AppConstants.liveTrackIouThreshold ||
-              centerDistance <=
-                  AppConstants.liveTrackCenterDistanceThreshold)) {
-        bestScore = score;
-        bestIndex = index;
-      }
-    }
-
-    return bestIndex == -1 ? null : bestIndex;
-  }
-
-  LiveConfidenceTier _confidenceTierFor(double confidence) {
-    if (confidence >= AppConstants.liveHighConfidenceThreshold) {
-      return LiveConfidenceTier.normal;
-    }
-    if (confidence >= AppConstants.liveWeakConfidenceThreshold) {
-      return LiveConfidenceTier.weak;
-    }
-    return LiveConfidenceTier.low;
   }
 
   int _rotationDegrees(
@@ -608,32 +568,6 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     return (camera.sensorOrientation - deviceDegrees + 360) % 360;
   }
 
-  double _iou(Rect a, Rect b) {
-    final left = math.max(a.left, b.left);
-    final top = math.max(a.top, b.top);
-    final right = math.min(a.right, b.right);
-    final bottom = math.min(a.bottom, b.bottom);
-    final width = right - left;
-    final height = bottom - top;
-    if (width <= 0 || height <= 0) {
-      return 0.0;
-    }
-
-    final intersection = width * height;
-    final union = (a.width * a.height) + (b.width * b.height) - intersection;
-    if (union <= 0) {
-      return 0.0;
-    }
-
-    return intersection / union;
-  }
-
-  double _centerDistance(Rect a, Rect b) {
-    final dx = a.center.dx - b.center.dx;
-    final dy = a.center.dy - b.center.dy;
-    return math.sqrt((dx * dx) + (dy * dy));
-  }
-
   Future<void> _releaseCamera({required bool keepLiveState}) async {
     final controller = _cameraController;
     final inferenceWorker = _inferenceWorker;
@@ -643,10 +577,13 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     _inferenceCadenceTimer?.cancel();
     _inferenceCadenceTimer = null;
     _isProcessingFrame = false;
+    _isSettingTorch = false;
+    _isTorchOn = false;
+    _lastTorchError = null;
     _performanceTracker.reset();
 
     if (!keepLiveState) {
-      _clearLiveDetections(cancelExpiration: true);
+      _clearLiveDetections(cancelEmergencyExpiration: true);
       _latestFrameSize = null;
       _lastPublishedFrameId = null;
       _lastInferenceStartedAt = null;
@@ -659,8 +596,53 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
+    await _turnTorchOffForRelease(controller);
     await _disposeController(controller);
     await inferenceWorker?.dispose();
+  }
+
+  Future<void> _turnTorchOffForRelease(CameraController controller) async {
+    await _setTorchMode(controller, enabled: false, reportErrors: false);
+    _isTorchOn = false;
+    _isSettingTorch = false;
+  }
+
+  Future<bool> _setTorchMode(
+    CameraController controller, {
+    required bool enabled,
+    required bool reportErrors,
+  }) async {
+    try {
+      if (!controller.value.isInitialized) {
+        if (reportErrors) {
+          _lastTorchError = 'Flashlight is available after the camera starts.';
+        }
+        return false;
+      }
+
+      await controller.setFlashMode(enabled ? FlashMode.torch : FlashMode.off);
+      return true;
+    } on CameraException catch (error) {
+      if (reportErrors) {
+        _lastTorchError = enabled
+            ? 'Flashlight is not available on this device.'
+            : 'Unable to turn flashlight off.';
+      }
+      if (kDebugMode) {
+        debugPrint('Unable to set live camera torch: $error');
+      }
+      return false;
+    } catch (error) {
+      if (reportErrors) {
+        _lastTorchError = enabled
+            ? 'Flashlight could not be turned on.'
+            : 'Flashlight could not be turned off.';
+      }
+      if (kDebugMode) {
+        debugPrint('Unable to set live camera torch: $error');
+      }
+      return false;
+    }
   }
 
   Future<void> _disposeController(CameraController controller) async {
@@ -734,45 +716,6 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 }
 
-class _StableDetectionTrack {
-  _StableDetectionTrack({required this.boundingBox, required this.stableClass});
-
-  factory _StableDetectionTrack.fromDetection(Detection detection) {
-    return _StableDetectionTrack(
-      boundingBox: detection.boundingBox,
-      stableClass: detection.maturityClass,
-    );
-  }
-
-  Rect boundingBox;
-  MaturityClass stableClass;
-  MaturityClass? pendingClass;
-  int pendingCount = 0;
-
-  void updateWith(Detection detection) {
-    boundingBox = detection.boundingBox;
-
-    if (detection.maturityClass == stableClass) {
-      pendingClass = null;
-      pendingCount = 0;
-      return;
-    }
-
-    if (pendingClass == detection.maturityClass) {
-      pendingCount++;
-    } else {
-      pendingClass = detection.maturityClass;
-      pendingCount = 1;
-    }
-
-    if (pendingCount >= AppConstants.liveStableClassFrames) {
-      stableClass = detection.maturityClass;
-      pendingClass = null;
-      pendingCount = 0;
-    }
-  }
-}
-
 class _LiveCameraFrame {
   const _LiveCameraFrame({
     required this.id,
@@ -835,6 +778,11 @@ class _LivePerformanceTracker {
   int _framesDropped = 0;
   int _staleResultsSkipped = 0;
   int _overlaysExpired = 0;
+  int _overlayRefreshes = 0;
+  int _noDetectionClears = 0;
+  int _trackCreations = 0;
+  int _trackMatches = 0;
+  int _trackRemovals = 0;
   int? _lastProcessedFrameId;
   LiveInferenceBackendInfo? _backendInfo;
   int _uiFrameCount = 0;
@@ -891,6 +839,19 @@ class _LivePerformanceTracker {
 
   void recordOverlayExpired() {
     _overlaysExpired++;
+  }
+
+  void recordOverlayRefreshed(LiveDetectionUpdate update) {
+    _overlayRefreshes++;
+    _trackCreations += update.createdTrackCount;
+    _trackMatches += update.matchedTrackCount;
+    _trackRemovals += update.removedTrackCount;
+  }
+
+  void recordNoDetectionClear({required bool didClear}) {
+    if (didClear) {
+      _noDetectionClears++;
+    }
   }
 
   void recordBackendInfo(LiveInferenceBackendInfo backendInfo) {
@@ -970,6 +931,9 @@ class _LivePerformanceTracker {
       'Frames dropped/skipped: $_framesDropped\n'
       'Stale results skipped: $_staleResultsSkipped\n'
       'Overlays expired: $_overlaysExpired\n'
+      'Overlay refreshes: $_overlayRefreshes\n'
+      'No-detection clears: $_noDetectionClears\n'
+      'Track create/match/remove: $_trackCreations/$_trackMatches/$_trackRemovals\n'
       'Pending: $pendingFrameCount\n'
       'Last frame ID: ${_lastProcessedFrameId ?? '-'}\n\n'
       'UI frames: $_uiFrameCount\n'
@@ -1019,6 +983,11 @@ class _LivePerformanceTracker {
     _framesDropped = 0;
     _staleResultsSkipped = 0;
     _overlaysExpired = 0;
+    _overlayRefreshes = 0;
+    _noDetectionClears = 0;
+    _trackCreations = 0;
+    _trackMatches = 0;
+    _trackRemovals = 0;
     _lastProcessedFrameId = null;
     _uiFrameCount = 0;
     _jankyUiFrameCount = 0;

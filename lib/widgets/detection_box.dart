@@ -2,6 +2,115 @@ import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/material.dart';
 
+class AnimatedDetectionBox extends ImplicitlyAnimatedWidget {
+  const AnimatedDetectionBox({
+    super.key,
+    required this.detection,
+    required this.fruitNumber,
+    required this.imageWidth,
+    required this.imageHeight,
+    required super.duration,
+    super.curve,
+    this.offsetX = 0,
+    this.offsetY = 0,
+    this.label,
+    this.subtitle,
+    this.colorOverride,
+  });
+
+  final Detection detection;
+  final int fruitNumber;
+  final double imageWidth;
+  final double imageHeight;
+  final double offsetX;
+  final double offsetY;
+  final String? label;
+  final String? subtitle;
+  final Color? colorOverride;
+
+  @override
+  AnimatedWidgetBaseState<AnimatedDetectionBox> createState() =>
+      _AnimatedDetectionBoxState();
+}
+
+class _AnimatedDetectionBoxState
+    extends AnimatedWidgetBaseState<AnimatedDetectionBox> {
+  _RectTween? _boundingBoxTween;
+  _RectTween? _maskBoundsTween;
+
+  @override
+  void forEachTween(TweenVisitor<dynamic> visitor) {
+    _boundingBoxTween =
+        visitor(
+              _boundingBoxTween,
+              widget.detection.boundingBox,
+              (dynamic value) => _RectTween(begin: value as Rect),
+            )
+            as _RectTween?;
+
+    final maskBounds = widget.detection.mask?.bounds;
+    _maskBoundsTween = maskBounds == null
+        ? null
+        : visitor(
+                _maskBoundsTween,
+                maskBounds,
+                (dynamic value) => _RectTween(begin: value as Rect),
+              )
+              as _RectTween?;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final animatedDetection = _animatedDetection();
+    return DetectionBox(
+      detection: animatedDetection,
+      fruitNumber: widget.fruitNumber,
+      imageWidth: widget.imageWidth,
+      imageHeight: widget.imageHeight,
+      offsetX: widget.offsetX,
+      offsetY: widget.offsetY,
+      label: widget.label,
+      subtitle: widget.subtitle,
+      colorOverride: widget.colorOverride,
+    );
+  }
+
+  Detection _animatedDetection() {
+    final detection = widget.detection;
+    final animatedBoundingBox =
+        _boundingBoxTween?.evaluate(animation) ?? detection.boundingBox;
+    final mask = detection.mask;
+    if (mask == null) {
+      return Detection(
+        boundingBox: animatedBoundingBox,
+        maturityClass: detection.maturityClass,
+        confidence: detection.confidence,
+      );
+    }
+
+    final animatedMaskBounds =
+        _maskBoundsTween?.evaluate(animation) ?? mask.bounds;
+    return Detection(
+      boundingBox: animatedBoundingBox,
+      maturityClass: detection.maturityClass,
+      confidence: detection.confidence,
+      mask: SegmentationMask(
+        bounds: animatedMaskBounds,
+        width: mask.width,
+        height: mask.height,
+        pixels: mask.pixels,
+      ),
+    );
+  }
+}
+
+class _RectTween extends Tween<Rect> {
+  _RectTween({super.begin});
+
+  @override
+  Rect lerp(double t) => Rect.lerp(begin, end, t)!;
+}
+
 class DetectionBox extends StatelessWidget {
   const DetectionBox({
     super.key,
