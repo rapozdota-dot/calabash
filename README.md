@@ -70,6 +70,35 @@ The APK is generated at:
 build/app/outputs/flutter-apk/app-release.apk
 ```
 
+## Windows 8 GB Android Build Profile
+
+This project keeps Android Gradle builds conservative for low-memory Windows
+development machines:
+
+- Gradle heap is capped at 1024 MB.
+- Kotlin daemon heap is capped at 512 MB.
+- Gradle workers are limited to 2.
+- Parallel project execution is disabled.
+- Gradle daemon reuse is enabled, with a 10-minute idle timeout.
+- Build cache and virtual file-system watching remain enabled.
+- Kotlin incremental compilation is disabled because Pub-cache plugin sources on
+  `C:` and this project on `G:` cause Kotlin incremental cache path failures.
+
+Useful maintenance commands:
+
+```powershell
+cd android
+.\gradlew.bat --status
+.\gradlew.bat --stop
+cd ..
+flutter clean
+flutter pub get
+```
+
+Use `.\gradlew.bat --stop` when Gradle daemons look stale or memory remains
+high after builds. Avoid deleting the global Gradle cache unless there is clear
+evidence that the cache is corrupted.
+
 ## GitHub APK Releases
 
 Every push to `main` or `master` runs the Android release workflow:
