@@ -1,0 +1,7 @@
+{
+  "java.import.gradle.enabled": false,
+  "java.project.importOnFirstTimeStartup": "disabled",
+  "java.autobuild.enabled": false,
+  "java.maxConcurrentBuilds": 1,
+  "gradle.autoDetect": "off"
+}
