@@ -2,9 +2,12 @@ import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:calabash_maturity_detection/models/detection.dart';
+import 'package:calabash_maturity_detection/providers/detection_provider.dart';
 import 'package:calabash_maturity_detection/providers/live_camera_provider.dart';
 import 'package:calabash_maturity_detection/providers/live_detection_tracker.dart';
+import 'package:calabash_maturity_detection/screens/result_screen.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
+import 'package:calabash_maturity_detection/utils/navigation.dart';
 import 'package:calabash_maturity_detection/widgets/detection_box.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -162,7 +165,9 @@ class _LivePreview extends StatelessWidget {
                   child: RepaintBoundary(child: CameraPreview(controller)),
                 ),
                 _LiveDetectionOverlay(previewRect: previewRect),
+                const _ReadinessIndicatorHost(),
                 const _LiveStatusBarHost(),
+                const _LiveCaptureControls(),
               ],
             ),
           );
@@ -279,6 +284,273 @@ class _LiveDetectionOverlay extends StatelessWidget {
   }
 }
 
+class _ReadinessIndicatorHost extends StatelessWidget {
+  const _ReadinessIndicatorHost();
+
+  @override
+  Widget build(BuildContext context) {
+    final status = context.select<LiveCameraProvider, LiveStabilityStatus>(
+      (provider) => provider.stabilityStatus,
+    );
+
+    return Positioned(
+      left: AppConstants.compactCardPadding,
+      right: AppConstants.compactCardPadding,
+      top: AppConstants.compactCardPadding,
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: _ReadinessIndicator(status: status),
+      ),
+    );
+  }
+}
+
+class _ReadinessIndicator extends StatelessWidget {
+  const _ReadinessIndicator({required this.status});
+
+  final LiveStabilityStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (status) {
+      LiveStabilityStatus.noCalabashDetected =>
+        AppConstants.unknownMaturityColor,
+      LiveStabilityStatus.holdSteady => AppConstants.immatureColor,
+      LiveStabilityStatus.ready => AppConstants.matureColor,
+    };
+    final icon = switch (status) {
+      LiveStabilityStatus.noCalabashDetected => Icons.search_off_rounded,
+      LiveStabilityStatus.holdSteady => Icons.pan_tool_alt_rounded,
+      LiveStabilityStatus.ready => Icons.check_circle_rounded,
+    };
+    final label = switch (status) {
+      LiveStabilityStatus.noCalabashDetected => 'NO CALABASH DETECTED',
+      LiveStabilityStatus.holdSteady => 'HOLD STEADY',
+      LiveStabilityStatus.ready => 'READY',
+    };
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(AppConstants.overlayRadius),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.24)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.18),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18, color: Colors.white),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LiveCaptureControls extends StatelessWidget {
+  const _LiveCaptureControls();
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.select<LiveCameraProvider, _CaptureButtonState>(
+      (provider) => _CaptureButtonState(
+        isCameraReady: provider.isCameraReady,
+        isCaptureWorkflowActive: provider.isCaptureWorkflowActive,
+      ),
+    );
+    final isStillDetectorBusy = context.select<DetectionProvider, bool>(
+      (provider) => provider.isBusy,
+    );
+    final isBusy = state.isCaptureWorkflowActive || isStillDetectorBusy;
+
+    return Positioned(
+      left: AppConstants.compactCardPadding,
+      right: AppConstants.compactCardPadding,
+      bottom: AppConstants.compactCardPadding,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 160),
+            child: isBusy
+                ? const _CaptureProgressPill()
+                : const SizedBox(height: 0),
+          ),
+          const SizedBox(height: 8),
+          _ShutterButton(
+            isEnabled: state.isCameraReady && !isBusy,
+            isBusy: isBusy,
+            onPressed: () => _captureAndOpenResult(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _captureAndOpenResult(BuildContext context) async {
+    final liveProvider = context.read<LiveCameraProvider>();
+    final detectionProvider = context.read<DetectionProvider>();
+    final capturedImage = await liveProvider.captureStillImage();
+
+    if (!context.mounted) {
+      return;
+    }
+
+    if (capturedImage == null) {
+      await liveProvider.resumeLiveDetection();
+      if (!context.mounted) {
+        return;
+      }
+      _showMessage(
+        context,
+        liveProvider.captureErrorMessage ?? 'Unable to capture image.',
+      );
+      return;
+    }
+
+    final success = await detectionProvider.scanFile(capturedImage);
+    if (!context.mounted) {
+      return;
+    }
+
+    if (!success) {
+      await liveProvider.resumeLiveDetection();
+      if (!context.mounted) {
+        return;
+      }
+      _showMessage(
+        context,
+        detectionProvider.errorMessage ??
+            'Captured image could not be analyzed.',
+      );
+      return;
+    }
+
+    await Navigator.of(context).push(fadeRoute(const ResultScreen()));
+    if (context.mounted) {
+      await context.read<LiveCameraProvider>().resumeLiveDetection();
+    }
+  }
+
+  void _showMessage(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+}
+
+class _CaptureProgressPill extends StatelessWidget {
+  const _CaptureProgressPill();
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppConstants.overlayScrim,
+        borderRadius: BorderRadius.circular(AppConstants.overlayRadius),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+      ),
+      child: const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            ),
+            SizedBox(width: 8),
+            Text(
+              'Processing capture...',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ShutterButton extends StatelessWidget {
+  const _ShutterButton({
+    required this.isEnabled,
+    required this.isBusy,
+    required this.onPressed,
+  });
+
+  final bool isEnabled;
+  final bool isBusy;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: 'Capture still image',
+      child: SizedBox(
+        width: 76,
+        height: 76,
+        child: FilledButton(
+          onPressed: isEnabled ? onPressed : null,
+          style: FilledButton.styleFrom(
+            shape: const CircleBorder(),
+            padding: EdgeInsets.zero,
+            backgroundColor: Colors.white,
+            disabledBackgroundColor: Colors.white.withValues(alpha: 0.48),
+            foregroundColor: AppConstants.primaryGreen,
+            disabledForegroundColor: Colors.white70,
+            side: BorderSide(
+              color: Colors.white.withValues(alpha: 0.72),
+              width: 4,
+            ),
+          ),
+          child: isBusy
+              ? const SizedBox(
+                  width: 26,
+                  height: 26,
+                  child: CircularProgressIndicator(strokeWidth: 3),
+                )
+              : const Icon(Icons.camera_alt_rounded, size: 34),
+        ),
+      ),
+    );
+  }
+}
+
 class _LiveStatusBarHost extends StatelessWidget {
   const _LiveStatusBarHost();
 
@@ -288,14 +560,14 @@ class _LiveStatusBarHost extends StatelessWidget {
       (provider) => _LiveStatusState(
         isProcessing: provider.isProcessingFrame,
         hasDetections: provider.liveDetections.isNotEmpty,
-        errorMessage: provider.errorMessage,
+        errorMessage: provider.captureErrorMessage ?? provider.errorMessage,
       ),
     );
 
     return Positioned(
       left: AppConstants.compactCardPadding,
       right: AppConstants.compactCardPadding,
-      bottom: AppConstants.compactCardPadding,
+      bottom: 148,
       child: _LiveStatusBar(
         isProcessing: state.isProcessing,
         hasDetections: state.hasDetections,
@@ -349,6 +621,27 @@ class _LiveStatusState {
 
   @override
   int get hashCode => Object.hash(isProcessing, hasDetections, errorMessage);
+}
+
+class _CaptureButtonState {
+  const _CaptureButtonState({
+    required this.isCameraReady,
+    required this.isCaptureWorkflowActive,
+  });
+
+  final bool isCameraReady;
+  final bool isCaptureWorkflowActive;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is _CaptureButtonState &&
+            other.isCameraReady == isCameraReady &&
+            other.isCaptureWorkflowActive == isCaptureWorkflowActive;
+  }
+
+  @override
+  int get hashCode => Object.hash(isCameraReady, isCaptureWorkflowActive);
 }
 
 class _TorchButtonState {

@@ -6,6 +6,8 @@ import 'package:flutter/widgets.dart';
 
 enum LiveConfidenceTier { normal, weak, low }
 
+enum LiveStabilityStatus { noCalabashDetected, holdSteady, ready }
+
 class LiveDetection {
   const LiveDetection({
     required this.trackId,
@@ -26,12 +28,14 @@ class LiveDetectionUpdate {
     required this.matchedTrackCount,
     required this.createdTrackCount,
     required this.removedTrackCount,
+    required this.stabilityStatus,
   });
 
   final List<LiveDetection> detections;
   final int matchedTrackCount;
   final int createdTrackCount;
   final int removedTrackCount;
+  final LiveStabilityStatus stabilityStatus;
 }
 
 class LiveDetectionTracker {
@@ -49,6 +53,7 @@ class LiveDetectionTracker {
         matchedTrackCount: 0,
         createdTrackCount: 0,
         removedTrackCount: removedTrackCount,
+        stabilityStatus: LiveStabilityStatus.noCalabashDetected,
       );
     }
 
@@ -78,7 +83,17 @@ class LiveDetectionTracker {
           next: detection.boundingBox,
           centerDistance: match.centerDistance,
         );
-        track.updateWith(detection);
+        track.updateWith(
+          detection,
+          isStableMotion: _isReadyStableMotion(
+            previous: track.boundingBox,
+            next: detection.boundingBox,
+            centerDistance: match.centerDistance,
+          ),
+          hasNormalConfidence:
+              _confidenceTierFor(detection.confidence) ==
+              LiveConfidenceTier.normal,
+        );
         usedTrackIndexes.add(match.trackIndex);
         matchedTrackCount++;
       }
@@ -109,6 +124,7 @@ class LiveDetectionTracker {
       matchedTrackCount: matchedTrackCount,
       createdTrackCount: createdTrackCount,
       removedTrackCount: removedTrackCount,
+      stabilityStatus: _stabilityStatusFor(liveDetections, updatedTracks),
     );
   }
 
@@ -169,6 +185,18 @@ class LiveDetectionTracker {
         heightDelta <= AppConstants.liveOverlayAnimationMaxSizeDelta;
   }
 
+  bool _isReadyStableMotion({
+    required Rect previous,
+    required Rect next,
+    required double centerDistance,
+  }) {
+    final widthDelta = _sizeDeltaRatio(previous.width, next.width);
+    final heightDelta = _sizeDeltaRatio(previous.height, next.height);
+    return centerDistance <= AppConstants.liveReadyCenterDistanceThreshold &&
+        widthDelta <= AppConstants.liveReadySizeDeltaThreshold &&
+        heightDelta <= AppConstants.liveReadySizeDeltaThreshold;
+  }
+
   double _sizeDeltaRatio(double previous, double next) {
     final baseline = math.max(previous.abs(), 0.0001);
     return (next - previous).abs() / baseline;
@@ -182,6 +210,28 @@ class LiveDetectionTracker {
       return LiveConfidenceTier.weak;
     }
     return LiveConfidenceTier.low;
+  }
+
+  LiveStabilityStatus _stabilityStatusFor(
+    List<LiveDetection> liveDetections,
+    List<_StableDetectionTrack> tracks,
+  ) {
+    if (liveDetections.isEmpty) {
+      return LiveStabilityStatus.noCalabashDetected;
+    }
+
+    final allNormalConfidence = liveDetections.every(
+      (detection) => detection.confidenceTier == LiveConfidenceTier.normal,
+    );
+    final allTracksStable = tracks.every(
+      (track) =>
+          track.stableMotionFrameCount >=
+          AppConstants.liveReadyStableFrameThreshold,
+    );
+
+    return allNormalConfidence && allTracksStable
+        ? LiveStabilityStatus.ready
+        : LiveStabilityStatus.holdSteady;
   }
 
   double _iou(Rect a, Rect b) {
@@ -228,6 +278,7 @@ class _StableDetectionTrack {
     required this.id,
     required this.boundingBox,
     required this.stableClass,
+    required this.stableMotionFrameCount,
   });
 
   factory _StableDetectionTrack.fromDetection({
@@ -238,16 +289,30 @@ class _StableDetectionTrack {
       id: id,
       boundingBox: detection.boundingBox,
       stableClass: detection.maturityClass,
+      stableMotionFrameCount:
+          detection.confidence >= AppConstants.liveHighConfidenceThreshold
+          ? 1
+          : 0,
     );
   }
 
   final int id;
   Rect boundingBox;
   MaturityClass stableClass;
+  int stableMotionFrameCount;
   MaturityClass? pendingClass;
   int pendingCount = 0;
 
-  void updateWith(Detection detection) {
+  void updateWith(
+    Detection detection, {
+    required bool isStableMotion,
+    required bool hasNormalConfidence,
+  }) {
+    stableMotionFrameCount = isStableMotion && hasNormalConfidence
+        ? stableMotionFrameCount + 1
+        : hasNormalConfidence
+        ? 1
+        : 0;
     boundingBox = detection.boundingBox;
 
     if (detection.maturityClass == stableClass) {

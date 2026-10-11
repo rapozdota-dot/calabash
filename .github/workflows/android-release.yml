@@ -1,4 +1,4 @@
-name: Android APK Release
+name: Android APK Build
 
 on:
   push:
@@ -6,17 +6,26 @@ on:
       - main
       - master
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish a GitHub Release for this APK
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: android-release-${{ github.ref }}
+  group: android-apk-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build-and-release:
-    name: Build and publish APK
+  build-apk:
+    name: Build release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -50,14 +59,36 @@ jobs:
 
       - name: Prepare APK asset
         run: |
+          safe_ref="${GITHUB_REF_NAME//\//-}"
+          apk_name="calabash-maturity-detection-${safe_ref}-${GITHUB_RUN_NUMBER}.apk"
           mkdir -p release
-          cp build/app/outputs/flutter-apk/app-release.apk release/calabash-maturity-detection-${{ github.run_number }}.apk
+          test -f build/app/outputs/flutter-apk/app-release.apk
+          cp build/app/outputs/flutter-apk/app-release.apk "release/${apk_name}"
+          echo "APK_NAME=${apk_name}" >> "${GITHUB_ENV}"
+          ls -lh release
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: calabash-maturity-detection-apk
+          name: calabash-maturity-detection-apk-${{ github.run_number }}
           path: release/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-apk
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: calabash-maturity-detection-apk-${{ github.run_number }}
+          path: release
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2

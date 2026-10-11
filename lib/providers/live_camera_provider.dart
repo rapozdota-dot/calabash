@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:calabash_maturity_detection/providers/live_detection_tracker.dart';
@@ -39,6 +40,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   _LiveCameraFrame? _pendingFrame;
   Timer? _inferenceCadenceTimer;
   Timer? _overlayEmergencyExpirationTimer;
+  Completer<void>? _activeFrameCompleter;
   final _performanceTracker = _LivePerformanceTracker();
   int _nextFrameId = 1;
   int? _lastPublishedFrameId;
@@ -51,7 +53,12 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _shouldRestoreOnResume = false;
   bool _isTorchOn = false;
   bool _isSettingTorch = false;
+  bool _isCapturingStill = false;
+  bool _isPausedForStillResult = false;
   String? _lastTorchError;
+  String? _captureErrorMessage;
+  LiveStabilityStatus _stabilityStatus = LiveStabilityStatus.noCalabashDetected;
+  int _readyGraceFramesRemaining = 0;
   bool _isDisposed = false;
 
   CameraController? get cameraController => _cameraController;
@@ -63,7 +70,12 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get hasProcessedFrame => _hasProcessedFrame;
   bool get isTorchOn => _isTorchOn;
   bool get isSettingTorch => _isSettingTorch;
+  bool get isCapturingStill => _isCapturingStill;
+  bool get isCaptureWorkflowActive =>
+      _isCapturingStill || _isPausedForStillResult;
   String? get lastTorchError => _lastTorchError;
+  String? get captureErrorMessage => _captureErrorMessage;
+  LiveStabilityStatus get stabilityStatus => _stabilityStatus;
   int get _pendingFrameCount => _pendingFrame == null ? 0 : 1;
 
   bool get isCameraReady =>
@@ -88,6 +100,99 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> openSettings() {
     return openAppSettings();
+  }
+
+  Future<File?> captureStillImage() async {
+    if (_isDisposed || _isCapturingStill) {
+      return null;
+    }
+
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) {
+      _captureErrorMessage = 'Camera is not ready yet.';
+      _safeNotifyListeners();
+      return null;
+    }
+
+    _isCapturingStill = true;
+    _captureErrorMessage = null;
+    _safeNotifyListeners();
+
+    try {
+      await _pauseImageStreamForStillCapture(controller);
+      await _waitForActiveFrameToFinish();
+
+      if (_isDisposed ||
+          _cameraController != controller ||
+          !controller.value.isInitialized) {
+        throw StateError('Camera became unavailable during capture.');
+      }
+
+      final capturedFile = await controller.takePicture();
+      _isPausedForStillResult = true;
+      return File(capturedFile.path);
+    } on CameraException catch (error) {
+      _captureErrorMessage =
+          'Image capture failed: ${error.description ?? error.code}';
+      if (kDebugMode) {
+        debugPrint('Live still capture failed: $error');
+      }
+      return null;
+    } catch (error) {
+      _captureErrorMessage = 'Image capture failed. Please try again.';
+      if (kDebugMode) {
+        debugPrint('Live still capture failed: $error');
+      }
+      return null;
+    } finally {
+      _isCapturingStill = false;
+      _safeNotifyListeners();
+    }
+  }
+
+  Future<void> resumeLiveDetection() async {
+    if (_isDisposed || _isCapturingStill || _isInitializingSession) {
+      return;
+    }
+
+    _isPausedForStillResult = false;
+    _shouldRestoreOnResume = false;
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) {
+      await _ensurePermissionAndStart(requestPermission: false);
+      return;
+    }
+
+    if (controller.value.isStreamingImages) {
+      _captureErrorMessage = null;
+      _setStatus(LiveCameraStatus.cameraReady);
+      return;
+    }
+
+    try {
+      await _ensureInferenceWorkerStarted();
+      if (_isDisposed ||
+          _cameraController != controller ||
+          !controller.value.isInitialized) {
+        return;
+      }
+
+      _pendingFrame = null;
+      _inferenceCadenceTimer?.cancel();
+      _inferenceCadenceTimer = null;
+      _lastInferenceStartedAt = null;
+      await controller.startImageStream(_handleCameraFrame);
+      _captureErrorMessage = null;
+      _setStatus(LiveCameraStatus.cameraReady);
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('Unable to resume live detection: $error');
+      }
+      _setStatus(
+        LiveCameraStatus.cameraError,
+        errorMessage: 'Camera could not resume live detection: $error',
+      );
+    }
   }
 
   Future<bool> toggleTorch() async {
@@ -266,6 +371,33 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _pauseImageStreamForStillCapture(
+    CameraController controller,
+  ) async {
+    _pendingFrame = null;
+    _inferenceCadenceTimer?.cancel();
+    _inferenceCadenceTimer = null;
+
+    if (!controller.value.isInitialized ||
+        !controller.value.isStreamingImages) {
+      return;
+    }
+
+    await controller.stopImageStream();
+  }
+
+  Future<void> _waitForActiveFrameToFinish() async {
+    final activeFrameCompleter = _activeFrameCompleter;
+    if (activeFrameCompleter == null || activeFrameCompleter.isCompleted) {
+      return;
+    }
+
+    await activeFrameCompleter.future.timeout(
+      AppConstants.liveResultMaxAge,
+      onTimeout: () {},
+    );
+  }
+
   void _handleCameraFrame(CameraImage frame) {
     final capturedAt = DateTime.now();
     _performanceTracker.recordFrameReceived(capturedAt);
@@ -273,6 +405,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     final activeController = _cameraController;
     if (_isDisposed ||
         activeController == null ||
+        _isCapturingStill ||
         !activeController.value.isInitialized) {
       _performanceTracker.recordFrameDropped();
       _performanceTracker.maybeLog(pendingFrameCount: _pendingFrameCount);
@@ -382,6 +515,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
+    final activeFrameCompleter = Completer<void>();
+    _activeFrameCompleter = activeFrameCompleter;
     _isProcessingFrame = true;
     _safeNotifyListeners();
 
@@ -451,6 +586,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       } else {
         final update = _detectionTracker.update(detections);
         _liveDetections = update.detections;
+        _applyStabilityStatus(update.stabilityStatus);
         _lastDetectionPublishedAt = publishAt;
         _performanceTracker.recordOverlayRefreshed(update);
         _scheduleOverlayEmergencyExpiration(publishAt);
@@ -470,6 +606,12 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     } finally {
       if (!_isDisposed) {
         _isProcessingFrame = false;
+        if (_activeFrameCompleter == activeFrameCompleter) {
+          _activeFrameCompleter = null;
+        }
+        if (!activeFrameCompleter.isCompleted) {
+          activeFrameCompleter.complete();
+        }
         _performanceTracker.maybeLog(pendingFrameCount: _pendingFrameCount);
         _safeNotifyListeners();
         if (_pendingFrame != null) {
@@ -506,6 +648,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     _liveDetections = [];
     _detectionTracker.clear();
     _lastDetectionPublishedAt = null;
+    _stabilityStatus = LiveStabilityStatus.noCalabashDetected;
+    _readyGraceFramesRemaining = 0;
 
     if (cancelEmergencyExpiration) {
       _overlayEmergencyExpirationTimer?.cancel();
@@ -513,6 +657,29 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     return hadVisibleDetections;
+  }
+
+  void _applyStabilityStatus(LiveStabilityStatus nextStatus) {
+    if (nextStatus == LiveStabilityStatus.ready) {
+      _stabilityStatus = LiveStabilityStatus.ready;
+      _readyGraceFramesRemaining = AppConstants.liveReadyGraceFrames;
+      return;
+    }
+
+    if (nextStatus == LiveStabilityStatus.noCalabashDetected) {
+      _stabilityStatus = LiveStabilityStatus.noCalabashDetected;
+      _readyGraceFramesRemaining = 0;
+      return;
+    }
+
+    if (_stabilityStatus == LiveStabilityStatus.ready &&
+        _readyGraceFramesRemaining > 0) {
+      _readyGraceFramesRemaining--;
+      return;
+    }
+
+    _stabilityStatus = nextStatus;
+    _readyGraceFramesRemaining = 0;
   }
 
   void _scheduleOverlayEmergencyExpiration(DateTime detectionPublishedAt) {
@@ -576,6 +743,11 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pendingFrame = null;
     _inferenceCadenceTimer?.cancel();
     _inferenceCadenceTimer = null;
+    final activeFrameCompleter = _activeFrameCompleter;
+    if (activeFrameCompleter != null && !activeFrameCompleter.isCompleted) {
+      activeFrameCompleter.complete();
+    }
+    _activeFrameCompleter = null;
     _isProcessingFrame = false;
     _isSettingTorch = false;
     _isTorchOn = false;
@@ -589,6 +761,10 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       _lastInferenceStartedAt = null;
       _hasProcessedFrame = false;
       _errorMessage = null;
+      _captureErrorMessage = null;
+      _isPausedForStillResult = false;
+      _stabilityStatus = LiveStabilityStatus.noCalabashDetected;
+      _readyGraceFramesRemaining = 0;
     }
 
     if (controller == null) {
@@ -689,7 +865,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     switch (state) {
       case AppLifecycleState.resumed:
-        if (_shouldRestoreOnResume) {
+        if (_shouldRestoreOnResume && !_isPausedForStillResult) {
           _shouldRestoreOnResume = false;
           unawaited(_ensurePermissionAndStart(requestPermission: false));
         }

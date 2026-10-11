@@ -78,7 +78,19 @@ class DetectionProvider extends ChangeNotifier {
       return false;
     }
 
-    _selectedImage = pickedImage;
+    return scanFile(pickedImage);
+  }
+
+  Future<bool> scanFile(File imageFile) async {
+    if (_isAnalyzing) {
+      _errorMessage = 'Another image is already being analyzed.';
+      notifyListeners();
+      return false;
+    }
+
+    _selectedImage = imageFile;
+    _detections = [];
+    _errorMessage = null;
     notifyListeners();
 
     return analyzeSelectedImage();
