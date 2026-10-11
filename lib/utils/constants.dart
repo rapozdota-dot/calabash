@@ -18,6 +18,10 @@ class AppConstants {
   static const double liveTrackCenterDistanceThreshold = 0.18;
   static const double liveOverlayAnimationMaxCenterDistance = 0.08;
   static const double liveOverlayAnimationMaxSizeDelta = 0.20;
+  static const int liveReadyStableFrameThreshold = 3;
+  static const int liveReadyGraceFrames = 1;
+  static const double liveReadyCenterDistanceThreshold = 0.05;
+  static const double liveReadySizeDeltaThreshold = 0.12;
   static const Duration liveInferenceMinInterval = Duration(milliseconds: 150);
   static const Duration liveOverlayAnimationDuration = Duration(
     milliseconds: 120,

@@ -84,6 +84,41 @@ void main() {
       expect(largerMove.detections.single.animateBounds, isFalse);
     },
   );
+
+  test('reports ready after three stable normal-confidence frames', () {
+    final tracker = LiveDetectionTracker();
+
+    final first = tracker.update([_detection(left: 0.10, top: 0.10)]);
+    final second = tracker.update([_detection(left: 0.12, top: 0.10)]);
+    final third = tracker.update([_detection(left: 0.13, top: 0.10)]);
+
+    expect(first.stabilityStatus, LiveStabilityStatus.holdSteady);
+    expect(second.stabilityStatus, LiveStabilityStatus.holdSteady);
+    expect(third.stabilityStatus, LiveStabilityStatus.ready);
+  });
+
+  test('keeps weak or unstable detections in hold steady', () {
+    final tracker = LiveDetectionTracker();
+
+    final weak = tracker.update([
+      _detection(left: 0.10, top: 0.10, confidence: 0.55),
+    ]);
+    final unstable = tracker.update([
+      _detection(left: 0.16, top: 0.10, confidence: 0.92),
+    ]);
+
+    expect(weak.stabilityStatus, LiveStabilityStatus.holdSteady);
+    expect(unstable.stabilityStatus, LiveStabilityStatus.holdSteady);
+  });
+
+  test('reports no calabash after detections clear', () {
+    final tracker = LiveDetectionTracker();
+    tracker.update([_detection(left: 0.10, top: 0.10)]);
+
+    final cleared = tracker.update([]);
+
+    expect(cleared.stabilityStatus, LiveStabilityStatus.noCalabashDetected);
+  });
 }
 
 Detection _detection({
@@ -91,11 +126,12 @@ Detection _detection({
   required double top,
   double width = 0.20,
   double height = 0.20,
+  double confidence = 0.92,
   MaturityClass maturityClass = MaturityClass.mature,
 }) {
   return Detection(
     boundingBox: Rect.fromLTWH(left, top, width, height),
     maturityClass: maturityClass,
-    confidence: 0.92,
+    confidence: confidence,
   );
 }
