@@ -64,6 +64,11 @@ and result-age timings.
 flutter build apk --release
 ```
 
+GitHub Actions pins Flutter `3.38.7` for reproducible APK builds. The Android
+build keeps the `tflite_flutter` plugin's Kotlin bytecode target aligned with
+that plugin module's existing Java 1.8 target; the app module remains configured
+for Java/Kotlin 17.
+
 The APK is generated at:
 
 ```text
