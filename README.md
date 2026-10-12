@@ -112,6 +112,34 @@ The APK is generated at:
 build/app/outputs/flutter-apk/app-release.apk
 ```
 
+## Branding Assets
+
+Approved branding source files live in:
+
+```text
+assets/branding/app_icon_master.png
+assets/branding/BG.png
+assets/branding/splash_screen.png
+assets/branding/splash_foreground.png
+```
+
+Launcher icons and native splash resources are generated with the existing free
+tooling:
+
+```bash
+dart run flutter_launcher_icons
+dart run flutter_native_splash:create
+```
+
+The Android adaptive icon uses a derived transparent safe-zone foreground. The
+native launch screens use a solid Calabash green background so the Flutter
+startup screen is the single visible branded splash design. The Flutter startup
+screen uses `BG.png` as the immediate background, fades in the derived
+`splash_foreground.png` fruit and scanning layer, fades in the approved
+typography, then crossfades to Home. The full startup targets about two seconds
+when model initialization is ready and remains on the completed splash while the
+existing model initialization is still running.
+
 ## Build Unsigned IPA
 
 iOS builds require macOS and Xcode. From a Windows development machine, use the
