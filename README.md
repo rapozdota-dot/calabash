@@ -25,9 +25,17 @@ assets/model/model.tflite
 
 The app expects a YOLOv8 segmentation TFLite model with:
 
-- input: `[1, 640, 640, 3] float32`
+- input: `[1, 3, 640, 640]` or `[1, 640, 640, 3] float32`
 - output 0: `[1, 39, 8400] float32`
-- output 1: `[1, 160, 160, 32] float32`
+- mask prototypes: `[1, 32, 160, 160]` or `[1, 160, 160, 32] float32`
+
+The current `best.tflite` uses channel-first input and prototypes. Both live
+camera frames and capture/gallery images use the same `ModelService`, which
+reads the tensor signature to choose the correct layout. Images are letterboxed
+to 640x640 with fill 114, packed as RGB float32 / 255, and boxes are decoded
+from normalized coordinates. Prototype output order is identified by shape.
+The 39 detection channels remain 4 box values, 3 class scores, and 32 mask
+coefficients; class-aware NMS and transparent segmentation masks are preserved.
 
 ## Run Locally
 

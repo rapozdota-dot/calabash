@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:calabash_maturity_detection/models/detection.dart';
+import 'package:calabash_maturity_detection/services/image_tensor_layout.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -100,22 +101,10 @@ class ModelService {
   static const double _letterboxFillValue = 114.0 / 255.0;
   static const bool _enableVerboseModelLogs = false;
 
-  static const List<int> _expectedInputShape = [
-    1,
-    AppConstants.modelInputSize,
-    AppConstants.modelInputSize,
-    3,
-  ];
   static const List<int> _expectedDetectionShape = [
     1,
     _detectionChannelCount,
     _candidateCount,
-  ];
-  static const List<int> _expectedProtoShape = [
-    1,
-    _protoHeight,
-    _protoWidth,
-    _maskChannelCount,
   ];
 
   ModelService({
@@ -129,7 +118,9 @@ class ModelService {
 
   Interpreter? _interpreter;
   Delegate? _delegate;
-  bool _isLoadingModel = false;
+  Future<void>? _modelLoading;
+  ImageTensorLayout? _inputLayout;
+  ImageTensorLayout? _protoLayout;
   bool _didLogTensorShapes = false;
   int? _detectionOutputIndex;
   int? _protoOutputIndex;
@@ -139,13 +130,17 @@ class ModelService {
   TfliteBackendConfig get backendConfig => _backendConfig;
   bool get _shouldVerboseLog => kDebugMode && _enableVerboseModelLogs;
 
-  Future<void> loadModel() async {
-    if (_interpreter != null || _isLoadingModel) {
-      return;
-    }
+  Future<void> loadModel() {
+    // Concurrent callers must wait for validation, not skip initialization.
+    final pending = _modelLoading;
+    if (pending != null) return pending;
+    if (_interpreter != null) return Future<void>.value();
+    final loading = _loadModel().whenComplete(() => _modelLoading = null);
+    _modelLoading = loading;
+    return loading;
+  }
 
-    _isLoadingModel = true;
-
+  Future<void> _loadModel() async {
     try {
       final runtime = await _createInterpreter();
       _interpreter = runtime.interpreter;
@@ -158,10 +153,8 @@ class ModelService {
       );
     } catch (error) {
       debugPrint('Model loading failed. Error: $error');
-      _interpreter = null;
+      dispose();
       rethrow;
-    } finally {
-      _isLoadingModel = false;
     }
   }
 
@@ -284,7 +277,7 @@ class ModelService {
     if (decodedImage == null) {
       throw StateError('Unable to decode image for inference.');
     }
-    return decodedImage;
+    return img.bakeOrientation(decodedImage);
   }
 
   ModelDetectionResult _detectFruitsFromDecodedImage(img.Image decodedImage) {
@@ -399,39 +392,23 @@ class ModelService {
     timings.resizeLetterboxMicros = resizeStopwatch.elapsedMicroseconds;
 
     final tensorStopwatch = Stopwatch()..start();
-    final flatInput = workspace.inputBuffer;
-    flatInput.fillRange(0, flatInput.length, _letterboxFillValue);
-    final shouldCollectRange = _shouldVerboseLog;
-    var minValue = shouldCollectRange ? _letterboxFillValue : 0.0;
-    var maxValue = shouldCollectRange ? _letterboxFillValue : 0.0;
-
-    for (var y = 0; y < resizedHeight; y++) {
-      final tensorRowOffset = ((y + topPad) * inputSize + leftPad) * 3;
-      for (var x = 0; x < resizedWidth; x++) {
-        final pixel = resized.getPixel(x, y);
-        final red = pixel.r.toDouble() / 255.0;
-        final green = pixel.g.toDouble() / 255.0;
-        final blue = pixel.b.toDouble() / 255.0;
-        final tensorIndex = tensorRowOffset + (x * 3);
-
-        flatInput[tensorIndex] = red;
-        flatInput[tensorIndex + 1] = green;
-        flatInput[tensorIndex + 2] = blue;
-
-        if (shouldCollectRange) {
-          minValue = math.min(minValue, math.min(red, math.min(green, blue)));
-          maxValue = math.max(maxValue, math.max(red, math.max(green, blue)));
-        }
-      }
-    }
+    final range = _inputLayout!.writeRgbImage(
+      image: resized,
+      buffer: workspace.inputBuffer,
+      inputSize: inputSize,
+      leftPad: leftPad,
+      topPad: topPad,
+      collectRange: _shouldVerboseLog,
+    );
 
     tensorStopwatch.stop();
     timings.tensorFillMicros = tensorStopwatch.elapsedMicroseconds;
 
     if (_shouldVerboseLog) {
       debugPrint(
-        'Preprocess: shape=$_expectedInputShape '
-        'range=[${minValue.toStringAsFixed(4)}, ${maxValue.toStringAsFixed(4)}] '
+        'Preprocess: shape=${_interpreter!.getInputTensor(0).shape} '
+        'layout=$_inputLayout '
+        'range=[${range.minValue.toStringAsFixed(4)}, ${range.maxValue.toStringAsFixed(4)}] '
         'gain=${gain.toStringAsFixed(4)} '
         'pad=($leftPad,$topPad,$rightPad,$bottomPad)',
       );
@@ -557,15 +534,38 @@ class ModelService {
       }
 
       if (!_isValidClassIndex(bestClass) ||
+          !bestScore.isFinite ||
+          bestScore > 1 ||
           bestScore <= AppConstants.confidenceThreshold) {
         continue;
       }
 
+      final cx = _detectionValueAt(detectionOutput, channel: 0, anchor: anchor);
+      final cy = _detectionValueAt(detectionOutput, channel: 1, anchor: anchor);
+      final width = _detectionValueAt(
+        detectionOutput,
+        channel: 2,
+        anchor: anchor,
+      );
+      final height = _detectionValueAt(
+        detectionOutput,
+        channel: 3,
+        anchor: anchor,
+      );
+      if (!cx.isFinite ||
+          !cy.isFinite ||
+          !width.isFinite ||
+          !height.isFinite ||
+          width <= 0 ||
+          height <= 0) {
+        invalidBoxes++;
+        continue;
+      }
       final box = _decodeModelSpaceBox(
-        cx: _detectionValueAt(detectionOutput, channel: 0, anchor: anchor),
-        cy: _detectionValueAt(detectionOutput, channel: 1, anchor: anchor),
-        width: _detectionValueAt(detectionOutput, channel: 2, anchor: anchor),
-        height: _detectionValueAt(detectionOutput, channel: 3, anchor: anchor),
+        cx: cx,
+        cy: cy,
+        width: width,
+        height: height,
       );
       final clippedModelBox = _clipBoxToModel(box);
       final originalBox = _scaleBoxToOriginal(
@@ -853,20 +853,19 @@ class ModelService {
     required Float32List rawProto,
     required Float32List channelFirstProto,
   }) {
-    var rawIndex = 0;
-    for (var y = 0; y < _protoHeight; y++) {
-      for (var x = 0; x < _protoWidth; x++) {
-        for (var channel = 0; channel < _maskChannelCount; channel++) {
-          final index = (channel * _protoPlaneSize) + (y * _protoWidth) + x;
-          channelFirstProto[index] = rawProto[rawIndex++];
-        }
-      }
-    }
+    _protoLayout!.copyToChannelFirst(
+      source: rawProto,
+      destination: channelFirstProto,
+      channels: _maskChannelCount,
+      height: _protoHeight,
+      width: _protoWidth,
+    );
 
     if (_shouldVerboseLog) {
       debugPrint(
         'Raw output tensors: detection=$_expectedDetectionShape '
-        'proto=$_expectedProtoShape',
+        'proto=${_interpreter!.getOutputTensor(_protoOutputIndex!).shape} '
+        'layout=$_protoLayout',
       );
     }
   }
@@ -948,12 +947,12 @@ class ModelService {
     }
 
     final inputTensor = inputTensors.first;
-    if (!_sameShape(inputTensor.shape, _expectedInputShape)) {
-      throw StateError(
-        'Unexpected input tensor shape ${inputTensor.shape}. '
-        'Expected $_expectedInputShape.',
-      );
-    }
+    _inputLayout = ImageTensorLayout.fromShape(
+      inputTensor.shape,
+      channels: 3,
+      height: AppConstants.modelInputSize,
+      width: AppConstants.modelInputSize,
+    );
     if (inputTensor.type != TensorType.float32) {
       throw StateError(
         'Unexpected input tensor type ${inputTensor.type}. '
@@ -973,8 +972,25 @@ class ModelService {
       final tensor = outputTensors[index];
       if (_sameShape(tensor.shape, _expectedDetectionShape)) {
         _detectionOutputIndex = index;
-      } else if (_sameShape(tensor.shape, _expectedProtoShape)) {
+      } else if (_sameShape(tensor.shape, [
+            1,
+            _protoHeight,
+            _protoWidth,
+            _maskChannelCount,
+          ]) ||
+          _sameShape(tensor.shape, [
+            1,
+            _maskChannelCount,
+            _protoHeight,
+            _protoWidth,
+          ])) {
         _protoOutputIndex = index;
+        _protoLayout = ImageTensorLayout.fromShape(
+          tensor.shape,
+          channels: _maskChannelCount,
+          height: _protoHeight,
+          width: _protoWidth,
+        );
       }
     }
 
@@ -983,7 +999,7 @@ class ModelService {
         'Unexpected output tensor shapes: '
         '${outputTensors.map((tensor) => tensor.shape).toList()}. '
         'Expected detection=$_expectedDetectionShape '
-        'and proto=$_expectedProtoShape.',
+        'and proto=[1,160,160,32] or [1,32,160,160].',
       );
     }
 
@@ -1158,6 +1174,9 @@ class ModelService {
     _detectionOutputIndex = null;
     _protoOutputIndex = null;
     _tensorWorkspace = null;
+    _inputLayout = null;
+    _protoLayout = null;
+    _didLogTensorShapes = false;
   }
 }
 
