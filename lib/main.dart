@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:calabash_maturity_detection/providers/detection_provider.dart';
+import 'package:calabash_maturity_detection/screens/branded_splash_screen.dart';
 import 'package:calabash_maturity_detection/screens/home_screen.dart';
 import 'package:calabash_maturity_detection/services/image_service.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
@@ -25,7 +28,7 @@ class CalabashApp extends StatelessWidget {
         title: AppConstants.appName,
         debugShowCheckedModeBanner: false,
         theme: _buildTheme(),
-        home: const HomeScreen(),
+        home: const _StartupGate(),
       ),
     );
   }
@@ -86,6 +89,85 @@ class CalabashApp extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _StartupGate extends StatelessWidget {
+  const _StartupGate();
+
+  static const _minimumSplashDuration = Duration(milliseconds: 1700);
+  static const _transitionDuration = Duration(milliseconds: 300);
+
+  @override
+  Widget build(BuildContext context) {
+    final isInitializing = context.select<DetectionProvider, bool>(
+      (provider) => provider.isInitializing,
+    );
+
+    return StartupSplashGate(
+      isInitializing: isInitializing,
+      minimumSplashDuration: _minimumSplashDuration,
+      transitionDuration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : _transitionDuration,
+      splash: const BrandedSplashScreen(key: ValueKey('branded-splash')),
+      home: const HomeScreen(key: ValueKey('home')),
+    );
+  }
+}
+
+class StartupSplashGate extends StatefulWidget {
+  const StartupSplashGate({
+    required this.isInitializing,
+    required this.splash,
+    required this.home,
+    this.minimumSplashDuration = const Duration(milliseconds: 1700),
+    this.transitionDuration = const Duration(milliseconds: 300),
+    super.key,
+  });
+
+  final bool isInitializing;
+  final Widget splash;
+  final Widget home;
+  final Duration minimumSplashDuration;
+  final Duration transitionDuration;
+
+  @override
+  State<StartupSplashGate> createState() => _StartupSplashGateState();
+}
+
+class _StartupSplashGateState extends State<StartupSplashGate> {
+  Timer? _minimumSplashTimer;
+  bool _minimumSplashElapsed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.minimumSplashDuration <= Duration.zero) {
+      _minimumSplashElapsed = true;
+      return;
+    }
+
+    _minimumSplashTimer = Timer(widget.minimumSplashDuration, () {
+      if (!mounted) return;
+      setState(() => _minimumSplashElapsed = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _minimumSplashTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final shouldShowSplash = widget.isInitializing || !_minimumSplashElapsed;
+
+    return AnimatedSwitcher(
+      duration: widget.transitionDuration,
+      child: shouldShowSplash ? widget.splash : widget.home,
     );
   }
 }

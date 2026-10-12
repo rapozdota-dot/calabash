@@ -68,6 +68,9 @@ flutter:
 
   assets:
     - assets/model/model.tflite
+    - assets/branding/BG.png
+    - assets/branding/splash_screen.png
+    - assets/branding/splash_foreground.png
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
@@ -97,17 +100,18 @@ flutter:
 
 flutter_launcher_icons:
   android: true
+  ios: true
   image_path: assets/branding/app_icon_master.png
-  adaptive_icon_background: "#F5F7F2"
-  adaptive_icon_foreground: assets/branding/app_icon_foreground.png
+  remove_alpha_ios: true
+  adaptive_icon_background: "#13251A"
+  adaptive_icon_foreground: assets/branding/app_icon_adaptive_foreground.png
+  adaptive_icon_foreground_inset: 16
   min_sdk_android: 21
 
 flutter_native_splash:
-  color: "#F5F7F2"
-  image: assets/branding/splash_logo.png
+  color: "#15351F"
   android: true
-  ios: false
+  ios: true
   web: false
   android_12:
-    color: "#F5F7F2"
-    image: assets/branding/splash_logo.png
+    color: "#15351F"
