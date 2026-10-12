@@ -1,0 +1,39 @@
+
+name: Build Calabash iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Build unsigned iOS app
+        run: flutter build ios --release --no-codesign
+
+      - name: Package IPA
+        run: |
+          mkdir -p package/Payload
+          mkdir -p dist
+          cp -R build/ios/iphoneos/Runner.app package/Payload/
+          cd package
+          zip -qry ../dist/Calabash-unsigned.ipa Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/Calabash-unsigned.ipa
+          archive: false
+          retention-days: 14
