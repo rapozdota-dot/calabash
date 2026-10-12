@@ -97,6 +97,9 @@ class HomeScreen extends StatelessWidget {
                       minimumSize: const Size.fromHeight(56),
                       backgroundColor: AppConstants.primaryGreen,
                       foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -106,6 +109,11 @@ class HomeScreen extends StatelessWidget {
                     ).push(fadeRoute(const CameraScreen())),
                     icon: const Icon(Icons.add_photo_alternate_outlined),
                     label: const Text('Photo or Gallery'),
+                    style: OutlinedButton.styleFrom(
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 28),
                   const Row(
