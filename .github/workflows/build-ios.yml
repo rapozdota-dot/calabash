@@ -1,0 +1,91 @@
+name: iOS Unsigned IPA Build
+
+on:
+  push:
+    branches:
+      - feature/camera-shutter
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-ios:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.38.7"
+          channel: stable
+          cache: true
+
+      - name: Show tool versions
+        run: |
+          flutter --version
+          xcodebuild -version
+          pod --version
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Verify iOS project files
+        run: |
+          test -d ios
+          test -f ios/Runner.xcodeproj/project.pbxproj
+          test -f ios/Runner.xcworkspace/contents.xcworkspacedata
+          test -f ios/Runner/Info.plist
+          test -f ios/Podfile
+
+      - name: Install iOS pods
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Analyze project
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
+
+      - name: Build unsigned iOS app
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        run: |
+          app_path="build/ios/iphoneos/Runner.app"
+          ipa_dir="build/ios/unsigned-ipa"
+          ipa_path="build/ios/Calabash-unsigned.ipa"
+
+          test -d "${app_path}"
+          rm -rf "${ipa_dir}"
+          mkdir -p "${ipa_dir}/Payload"
+          ditto "${app_path}" "${ipa_dir}/Payload/Runner.app"
+          test -d "${ipa_dir}/Payload/Runner.app"
+
+          (
+            cd "${ipa_dir}"
+            zip -qry "../Calabash-unsigned.ipa" Payload
+          )
+
+          test -f "${ipa_path}"
+          unzip -l "${ipa_path}" | grep "Payload/Runner.app/Info.plist"
+          ls -lh "${ipa_path}"
+
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: calabash-unsigned-ipa-${{ github.run_number }}
+          path: build/ios/Calabash-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30

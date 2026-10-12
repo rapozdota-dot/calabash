@@ -75,6 +75,24 @@ The APK is generated at:
 build/app/outputs/flutter-apk/app-release.apk
 ```
 
+## Build Unsigned IPA
+
+iOS builds require macOS and Xcode. From a Windows development machine, use the
+GitHub Actions workflow instead of a local iOS build:
+
+```text
+.github/workflows/build-ios.yml
+```
+
+The workflow runs on the `feature/camera-shutter` branch and can also be started
+manually with `workflow_dispatch`. It pins Flutter `3.38.7`, installs CocoaPods
+dependencies, runs `flutter build ios --release --no-codesign`, packages
+`Payload/Runner.app` into `build/ios/Calabash-unsigned.ipa`, and uploads that IPA
+as a workflow artifact.
+
+`Calabash-unsigned.ipa` is an unsigned artifact. It must be signed before it can
+be installed on a physical iPhone.
+
 ## Windows 8 GB Android Build Profile
 
 This project keeps Android Gradle builds conservative for low-memory Windows
@@ -104,7 +122,7 @@ Use `.\gradlew.bat --stop` when Gradle daemons look stale or memory remains
 high after builds. Avoid deleting the global Gradle cache unless there is clear
 evidence that the cache is corrupted.
 
-## GitHub APK Releases
+## GitHub Build Workflows
 
 Every push to `main` or `master` runs the Android release workflow:
 
@@ -112,4 +130,16 @@ Every push to `main` or `master` runs the Android release workflow:
 .github/workflows/android-release.yml
 ```
 
-The workflow analyzes the project, runs tests, builds the APK, and publishes a GitHub Release with the APK attached.
+The Android workflow analyzes the project, runs tests, builds the APK, uploads a
+downloadable APK artifact, and publishes a GitHub Release only when manually
+started with `publish_release=true`.
+
+Every push to `feature/camera-shutter` runs the iOS unsigned IPA workflow:
+
+```text
+.github/workflows/build-ios.yml
+```
+
+The iOS workflow analyzes the project, runs tests, builds an unsigned iOS app,
+packages it as `Calabash-unsigned.ipa`, and uploads the IPA as a downloadable
+artifact.
