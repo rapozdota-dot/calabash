@@ -10,11 +10,15 @@ on:
       publish_release:
         description: Publish a GitHub Release for this APK
         required: true
-        default: "false"
+        default: "true"
         type: choice
         options:
           - "false"
           - "true"
+      release_name:
+        description: Optional descriptive release title (version and build are added automatically)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -55,7 +59,7 @@ jobs:
         run: flutter test
 
       - name: Build release APK
-        run: flutter build apk --release
+        run: flutter build apk --release --build-number=${{ github.run_number }}
 
       - name: Prepare APK asset
         run: |
@@ -78,12 +82,23 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     needs: build-apk
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true' }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Name release
+        env:
+          CUSTOM_TITLE: ${{ inputs.release_name }}
+        run: |
+          version=$(sed -n 's/^version: *\([^+ ]*\).*/\1/p' pubspec.yaml)
+          title="${CUSTOM_TITLE:-$(git log -1 --format=%s)}"
+          echo "RELEASE_NAME=Calabash v${version} - Build ${GITHUB_RUN_NUMBER} - ${title}" >> "$GITHUB_ENV"
+
       - name: Download APK artifact
         uses: actions/download-artifact@v4
         with:
@@ -94,10 +109,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
-          name: APK Build ${{ github.run_number }}
+          name: ${{ env.RELEASE_NAME }}
           body: |
             Automated Android APK build for Calabash Maturity Detection.
 
             Commit: ${{ github.sha }}
+            Includes the bundled offline model and live detection.
           files: release/*.apk
           make_latest: true

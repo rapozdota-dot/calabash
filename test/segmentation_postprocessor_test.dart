@@ -1,0 +1,117 @@
+import 'dart:typed_data';
+
+import 'package:calabash_maturity_detection/models/detection.dart';
+import 'package:calabash_maturity_detection/services/segmentation_postprocessor.dart';
+import 'package:flutter/painting.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  test(
+    'suppresses the same fruit with conflicting stages, keeps adjacent fruits',
+    () {
+      const box = Rect.fromLTWH(0.1, 0.1, 0.3, 0.3);
+      const strong = Detection(
+        boundingBox: box,
+        maturityClass: MaturityClass.mature,
+        confidence: 0.95,
+      );
+      const duplicate = Detection(
+        boundingBox: Rect.fromLTWH(0.11, 0.1, 0.3, 0.3),
+        maturityClass: MaturityClass.immature,
+        confidence: 0.78,
+      );
+      const adjacent = Detection(
+        boundingBox: Rect.fromLTWH(0.35, 0.1, 0.3, 0.3),
+        maturityClass: MaturityClass.immature,
+        confidence: 0.85,
+      );
+      final result = SegmentationPostprocessor.suppressDuplicates(
+        [duplicate, adjacent, strong],
+        boxOf: (d) => d.boundingBox,
+        confidenceOf: (d) => d.confidence,
+        iouThreshold: 0.6,
+        maxDetections: 20,
+      );
+      expect(result, [strong, adjacent]);
+    },
+  );
+
+  test(
+    'cropped mask math matches full dot product inside box and clears stale pixels',
+    () {
+      final coefficients = Float32List.fromList([2, -1]);
+      final prototypes = Float32List.fromList(
+        List.generate(32, (i) => i.toDouble()),
+      );
+      final logits = Float32List(16)..fillRange(0, 16, 99);
+      SegmentationPostprocessor.reconstructMask(
+        coefficients: coefficients,
+        prototypes: prototypes,
+        logits: logits,
+        modelBox: const Rect.fromLTWH(1, 1, 2, 2),
+        modelSize: 4,
+        width: 4,
+        height: 4,
+      );
+      for (var y = 0; y < 4; y++) {
+        for (var x = 0; x < 4; x++) {
+          final index = y * 4 + x;
+          final expected = x >= 1 && x < 3 && y >= 1 && y < 3
+              ? coefficients[0] * prototypes[index] +
+                    coefficients[1] * prototypes[16 + index]
+              : 0.0;
+          expect(logits[index], expected);
+        }
+      }
+    },
+  );
+
+  test('one positive prototype pixel is not sufficient mask evidence', () {
+    final logits = Float32List(16)..[5] = 1;
+    bool supported() => SegmentationPostprocessor.hasMaskSupport(
+      logits: logits,
+      modelBox: const Rect.fromLTWH(0, 0, 4, 4),
+      modelSize: 4,
+      width: 4,
+      height: 4,
+      threshold: 0,
+      minimumPixels: 4,
+      minimumFraction: 0.01,
+    );
+    expect(supported(), isFalse);
+    for (final i in [6, 9, 10]) {
+      logits[i] = 1;
+    }
+    expect(supported(), isTrue);
+  });
+
+  test('sparse masks can vanish after smoothing and must not be counted', () {
+    final source = Uint8List(16)..[5] = 1;
+    final smoothed = SegmentationPostprocessor.smoothMask(source, 4, 4);
+    final mask = SegmentationMask(
+      bounds: const Rect.fromLTWH(0, 0, 1, 1),
+      width: 4,
+      height: 4,
+      pixels: smoothed,
+    );
+    expect(mask.isEmpty, isTrue);
+  });
+
+  test(
+    'invalid coefficients fail explicitly rather than producing a maskless label',
+    () {
+      expect(
+        () => SegmentationPostprocessor.reconstructMask(
+          coefficients: Float32List.fromList([double.nan]),
+          prototypes: Float32List(16),
+          logits: Float32List(16),
+          modelBox: const Rect.fromLTWH(0, 0, 4, 4),
+          modelSize: 4,
+          width: 4,
+          height: 4,
+        ),
+        throwsStateError,
+      );
+    },
+  );
+}

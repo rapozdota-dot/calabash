@@ -514,7 +514,7 @@ class _LiveInferenceWorkerRuntime {
         modelBytes: modelBytes,
         config: config,
         warmupRuns: 1,
-        measuredRuns: 2,
+        measuredRuns: 1,
       );
       attempts.add(attempt.benchmark);
 
@@ -571,6 +571,8 @@ class _LiveInferenceWorkerRuntime {
     final service = ModelService(
       modelBuffer: Uint8List.fromList(modelBytes),
       backendConfig: config,
+      confidenceThreshold: AppConstants.liveWeakConfidenceThreshold,
+      maxDetections: AppConstants.liveMaxDetections,
     );
 
     try {

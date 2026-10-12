@@ -17,7 +17,7 @@ class CameraScreen extends StatelessWidget {
         return Scaffold(
           appBar: AppBar(title: const Text('Scan Calabash')),
           body: SafeArea(
-            child: Padding(
+            child: SingleChildScrollView(
               padding: const EdgeInsets.all(AppConstants.pagePadding),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -34,6 +34,14 @@ class CameraScreen extends StatelessWidget {
                           },
                     icon: const Icon(Icons.videocam_rounded, size: 20),
                     label: const Text('Live Detection'),
+                  ),
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: provider.isBusy
+                        ? null
+                        : () => _scan(context, provider, ImageSource.camera),
+                    icon: const Icon(Icons.camera_alt_outlined, size: 20),
+                    label: const Text('Take a Photo'),
                   ),
                   const SizedBox(height: 10),
                   OutlinedButton.icon(
@@ -102,7 +110,7 @@ class _ScanPanel extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            'Use your camera or choose an image from your gallery.',
+            'Live preview helps you aim. Take a photo for a detailed maturity result, or choose a saved image.',
             textAlign: TextAlign.center,
             style: Theme.of(
               context,

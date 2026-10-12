@@ -2,6 +2,8 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:calabash_maturity_detection/models/detection.dart';
+import 'package:calabash_maturity_detection/services/image_tensor_layout.dart';
+import 'package:calabash_maturity_detection/services/segmentation_postprocessor.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -100,36 +102,32 @@ class ModelService {
   static const double _letterboxFillValue = 114.0 / 255.0;
   static const bool _enableVerboseModelLogs = false;
 
-  static const List<int> _expectedInputShape = [
-    1,
-    AppConstants.modelInputSize,
-    AppConstants.modelInputSize,
-    3,
-  ];
   static const List<int> _expectedDetectionShape = [
     1,
     _detectionChannelCount,
     _candidateCount,
   ];
-  static const List<int> _expectedProtoShape = [
-    1,
-    _protoHeight,
-    _protoWidth,
-    _maskChannelCount,
-  ];
 
   ModelService({
     Uint8List? modelBuffer,
     TfliteBackendConfig backendConfig = TfliteBackendConfig.cpu2,
+    double confidenceThreshold = AppConstants.confidenceThreshold,
+    int maxDetections = AppConstants.maxDetections,
   }) : _modelBuffer = modelBuffer,
-       _backendConfig = backendConfig;
+       _backendConfig = backendConfig,
+       _confidenceThreshold = confidenceThreshold,
+       _maxDetections = maxDetections;
 
   final Uint8List? _modelBuffer;
   final TfliteBackendConfig _backendConfig;
+  final double _confidenceThreshold;
+  final int _maxDetections;
 
   Interpreter? _interpreter;
   Delegate? _delegate;
-  bool _isLoadingModel = false;
+  Future<void>? _modelLoading;
+  ImageTensorLayout? _inputLayout;
+  ImageTensorLayout? _protoLayout;
   bool _didLogTensorShapes = false;
   int? _detectionOutputIndex;
   int? _protoOutputIndex;
@@ -139,13 +137,17 @@ class ModelService {
   TfliteBackendConfig get backendConfig => _backendConfig;
   bool get _shouldVerboseLog => kDebugMode && _enableVerboseModelLogs;
 
-  Future<void> loadModel() async {
-    if (_interpreter != null || _isLoadingModel) {
-      return;
-    }
+  Future<void> loadModel() {
+    // Concurrent callers must wait for validation, not skip initialization.
+    final pending = _modelLoading;
+    if (pending != null) return pending;
+    if (_interpreter != null) return Future<void>.value();
+    final loading = _loadModel().whenComplete(() => _modelLoading = null);
+    _modelLoading = loading;
+    return loading;
+  }
 
-    _isLoadingModel = true;
-
+  Future<void> _loadModel() async {
     try {
       final runtime = await _createInterpreter();
       _interpreter = runtime.interpreter;
@@ -158,10 +160,8 @@ class ModelService {
       );
     } catch (error) {
       debugPrint('Model loading failed. Error: $error');
-      _interpreter = null;
+      dispose();
       rethrow;
-    } finally {
-      _isLoadingModel = false;
     }
   }
 
@@ -284,7 +284,7 @@ class ModelService {
     if (decodedImage == null) {
       throw StateError('Unable to decode image for inference.');
     }
-    return decodedImage;
+    return img.bakeOrientation(decodedImage);
   }
 
   ModelDetectionResult _detectFruitsFromDecodedImage(img.Image decodedImage) {
@@ -310,33 +310,42 @@ class ModelService {
         candidateParsingStopwatch.elapsedMicroseconds;
 
     final nmsStopwatch = Stopwatch()..start();
-    final nmsCandidates = _applyClassAwareNms(candidates);
+    final nmsCandidates = SegmentationPostprocessor.suppressDuplicates(
+      candidates,
+      boxOf: (candidate) => candidate.modelSpaceBox,
+      confidenceOf: (candidate) => candidate.confidence,
+      iouThreshold: AppConstants.iouThreshold,
+      maxDetections: _maxDetections,
+    );
     nmsStopwatch.stop();
     timings.nmsMicros = nmsStopwatch.elapsedMicroseconds;
 
     var finalCandidates = nmsCandidates;
-    try {
+    if (nmsCandidates.isNotEmpty) {
       final protoStopwatch = Stopwatch()..start();
-      _copyProtoTensor(
-        rawProto: workspace.protoOutputBuffer,
-        channelFirstProto: workspace.protoChannelFirstBuffer,
-      );
+      // Current exports are already channel-first. No 3 MB copy per frame.
+      final prototypes = _protoLayout == ImageTensorLayout.channelsFirst
+          ? workspace.protoOutputBuffer
+          : workspace.protoChannelFirstBuffer;
+      if (nmsCandidates.isNotEmpty &&
+          _protoLayout != ImageTensorLayout.channelsFirst) {
+        _copyProtoTensor(
+          rawProto: workspace.protoOutputBuffer,
+          channelFirstProto: workspace.protoChannelFirstBuffer,
+        );
+      }
       protoStopwatch.stop();
       timings.protoExtractionMicros = protoStopwatch.elapsedMicroseconds;
 
       final maskStopwatch = Stopwatch()..start();
       finalCandidates = _attachMasksAndFilterCandidates(
         candidates: nmsCandidates,
-        protoTensor: workspace.protoChannelFirstBuffer,
+        protoTensor: prototypes,
         maskLogitsBuffer: workspace.maskLogitsBuffer,
         metadata: preprocessed.metadata,
       );
       maskStopwatch.stop();
       timings.maskReconstructionMicros = maskStopwatch.elapsedMicroseconds;
-    } catch (error) {
-      if (kDebugMode) {
-        debugPrint('Mask filtering skipped. Error: $error');
-      }
     }
 
     final detections = finalCandidates
@@ -399,39 +408,23 @@ class ModelService {
     timings.resizeLetterboxMicros = resizeStopwatch.elapsedMicroseconds;
 
     final tensorStopwatch = Stopwatch()..start();
-    final flatInput = workspace.inputBuffer;
-    flatInput.fillRange(0, flatInput.length, _letterboxFillValue);
-    final shouldCollectRange = _shouldVerboseLog;
-    var minValue = shouldCollectRange ? _letterboxFillValue : 0.0;
-    var maxValue = shouldCollectRange ? _letterboxFillValue : 0.0;
-
-    for (var y = 0; y < resizedHeight; y++) {
-      final tensorRowOffset = ((y + topPad) * inputSize + leftPad) * 3;
-      for (var x = 0; x < resizedWidth; x++) {
-        final pixel = resized.getPixel(x, y);
-        final red = pixel.r.toDouble() / 255.0;
-        final green = pixel.g.toDouble() / 255.0;
-        final blue = pixel.b.toDouble() / 255.0;
-        final tensorIndex = tensorRowOffset + (x * 3);
-
-        flatInput[tensorIndex] = red;
-        flatInput[tensorIndex + 1] = green;
-        flatInput[tensorIndex + 2] = blue;
-
-        if (shouldCollectRange) {
-          minValue = math.min(minValue, math.min(red, math.min(green, blue)));
-          maxValue = math.max(maxValue, math.max(red, math.max(green, blue)));
-        }
-      }
-    }
+    final range = _inputLayout!.writeRgbImage(
+      image: resized,
+      buffer: workspace.inputBuffer,
+      inputSize: inputSize,
+      leftPad: leftPad,
+      topPad: topPad,
+      collectRange: _shouldVerboseLog,
+    );
 
     tensorStopwatch.stop();
     timings.tensorFillMicros = tensorStopwatch.elapsedMicroseconds;
 
     if (_shouldVerboseLog) {
       debugPrint(
-        'Preprocess: shape=$_expectedInputShape '
-        'range=[${minValue.toStringAsFixed(4)}, ${maxValue.toStringAsFixed(4)}] '
+        'Preprocess: shape=${_interpreter!.getInputTensor(0).shape} '
+        'layout=$_inputLayout '
+        'range=[${range.minValue.toStringAsFixed(4)}, ${range.maxValue.toStringAsFixed(4)}] '
         'gain=${gain.toStringAsFixed(4)} '
         'pad=($leftPad,$topPad,$rightPad,$bottomPad)',
       );
@@ -557,15 +550,38 @@ class ModelService {
       }
 
       if (!_isValidClassIndex(bestClass) ||
-          bestScore <= AppConstants.confidenceThreshold) {
+          !bestScore.isFinite ||
+          bestScore > 1 ||
+          bestScore <= _confidenceThreshold) {
         continue;
       }
 
+      final cx = _detectionValueAt(detectionOutput, channel: 0, anchor: anchor);
+      final cy = _detectionValueAt(detectionOutput, channel: 1, anchor: anchor);
+      final width = _detectionValueAt(
+        detectionOutput,
+        channel: 2,
+        anchor: anchor,
+      );
+      final height = _detectionValueAt(
+        detectionOutput,
+        channel: 3,
+        anchor: anchor,
+      );
+      if (!cx.isFinite ||
+          !cy.isFinite ||
+          !width.isFinite ||
+          !height.isFinite ||
+          width <= 0 ||
+          height <= 0) {
+        invalidBoxes++;
+        continue;
+      }
       final box = _decodeModelSpaceBox(
-        cx: _detectionValueAt(detectionOutput, channel: 0, anchor: anchor),
-        cy: _detectionValueAt(detectionOutput, channel: 1, anchor: anchor),
-        width: _detectionValueAt(detectionOutput, channel: 2, anchor: anchor),
-        height: _detectionValueAt(detectionOutput, channel: 3, anchor: anchor),
+        cx: cx,
+        cy: cy,
+        width: width,
+        height: height,
       );
       final clippedModelBox = _clipBoxToModel(box);
       final originalBox = _scaleBoxToOriginal(
@@ -589,6 +605,7 @@ class ModelService {
           anchor: anchor,
         );
       }
+      if (maskCoefficients.any((value) => !value.isFinite)) continue;
 
       final candidate = _SegmentationCandidate(
         modelSpaceBox: clippedModelBox,
@@ -676,42 +693,6 @@ class ModelService {
     );
   }
 
-  List<_SegmentationCandidate> _applyClassAwareNms(
-    List<_SegmentationCandidate> candidates,
-  ) {
-    if (candidates.length <= 1) {
-      return candidates;
-    }
-
-    final sorted = [...candidates]
-      ..sort((a, b) => b.confidence.compareTo(a.confidence));
-    final kept = <_SegmentationCandidate>[];
-
-    for (final candidate in sorted) {
-      var shouldKeep = true;
-
-      for (final picked in kept) {
-        if (candidate.classIndex != picked.classIndex) {
-          continue;
-        }
-        if (_iou(candidate.modelSpaceBox, picked.modelSpaceBox) >
-            AppConstants.iouThreshold) {
-          shouldKeep = false;
-          break;
-        }
-      }
-
-      if (shouldKeep) {
-        kept.add(candidate);
-      }
-      if (kept.length >= AppConstants.maxDetections) {
-        break;
-      }
-    }
-
-    return kept;
-  }
-
   List<_SegmentationCandidate> _attachMasksAndFilterCandidates({
     required List<_SegmentationCandidate> candidates,
     required Float32List protoTensor,
@@ -726,24 +707,35 @@ class ModelService {
     var droppedByMask = 0;
 
     for (final candidate in candidates) {
-      _writeMaskLogits(
-        maskCoefficients: candidate.maskCoefficients,
-        protoTensor: protoTensor,
-        maskLogits: maskLogitsBuffer,
+      SegmentationPostprocessor.reconstructMask(
+        coefficients: candidate.maskCoefficients,
+        prototypes: protoTensor,
+        logits: maskLogitsBuffer,
+        modelBox: candidate.modelSpaceBox,
+        modelSize: AppConstants.modelInputSize,
+        width: _protoWidth,
+        height: _protoHeight,
       );
-      if (_hasPositiveMaskPixels(
-        maskLogits: maskLogitsBuffer,
-        modelSpaceBox: candidate.modelSpaceBox,
+      if (SegmentationPostprocessor.hasMaskSupport(
+        logits: maskLogitsBuffer,
+        modelBox: candidate.modelSpaceBox,
+        modelSize: AppConstants.modelInputSize,
+        width: _protoWidth,
+        height: _protoHeight,
+        threshold: AppConstants.maskLogitThreshold,
+        minimumPixels: AppConstants.minimumMaskPixels,
+        minimumFraction: AppConstants.minimumMaskFraction,
       )) {
-        kept.add(
-          candidate.copyWith(
-            visualMask: _buildDisplayMask(
-              candidate: candidate,
-              maskLogits: maskLogitsBuffer,
-              metadata: metadata,
-            ),
-          ),
+        final mask = _buildDisplayMask(
+          candidate: candidate,
+          maskLogits: maskLogitsBuffer,
+          metadata: metadata,
         );
+        if (mask != null && !mask.isEmpty) {
+          kept.add(candidate.copyWith(visualMask: mask));
+        } else {
+          droppedByMask++;
+        }
       } else {
         droppedByMask++;
       }
@@ -820,119 +812,33 @@ class ModelService {
       ),
       width: maskWidth,
       height: maskHeight,
-      pixels: _smoothMask(pixels, maskWidth, maskHeight),
+      pixels: SegmentationPostprocessor.smoothMask(
+        pixels,
+        maskWidth,
+        maskHeight,
+      ),
     );
-  }
-
-  Uint8List _smoothMask(Uint8List source, int width, int height) {
-    final smoothed = Uint8List(source.length);
-
-    for (var y = 0; y < height; y++) {
-      for (var x = 0; x < width; x++) {
-        var activeNeighbors = 0;
-        for (var dy = -1; dy <= 1; dy++) {
-          for (var dx = -1; dx <= 1; dx++) {
-            final nx = x + dx;
-            final ny = y + dy;
-            if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
-              continue;
-            }
-            activeNeighbors += source[(ny * width) + nx];
-          }
-        }
-        if (activeNeighbors >= 4) {
-          smoothed[(y * width) + x] = 1;
-        }
-      }
-    }
-
-    return smoothed;
   }
 
   void _copyProtoTensor({
     required Float32List rawProto,
     required Float32List channelFirstProto,
   }) {
-    var rawIndex = 0;
-    for (var y = 0; y < _protoHeight; y++) {
-      for (var x = 0; x < _protoWidth; x++) {
-        for (var channel = 0; channel < _maskChannelCount; channel++) {
-          final index = (channel * _protoPlaneSize) + (y * _protoWidth) + x;
-          channelFirstProto[index] = rawProto[rawIndex++];
-        }
-      }
-    }
+    _protoLayout!.copyToChannelFirst(
+      source: rawProto,
+      destination: channelFirstProto,
+      channels: _maskChannelCount,
+      height: _protoHeight,
+      width: _protoWidth,
+    );
 
     if (_shouldVerboseLog) {
       debugPrint(
         'Raw output tensors: detection=$_expectedDetectionShape '
-        'proto=$_expectedProtoShape',
+        'proto=${_interpreter!.getOutputTensor(_protoOutputIndex!).shape} '
+        'layout=$_protoLayout',
       );
     }
-  }
-
-  void _writeMaskLogits({
-    required Float32List maskCoefficients,
-    required Float32List protoTensor,
-    required Float32List maskLogits,
-  }) {
-    maskLogits.fillRange(0, maskLogits.length, 0.0);
-
-    for (var channel = 0; channel < _maskChannelCount; channel++) {
-      final coefficient = maskCoefficients[channel];
-      if (coefficient == 0.0) {
-        continue;
-      }
-
-      final channelOffset = channel * _protoPlaneSize;
-      for (var index = 0; index < maskLogits.length; index++) {
-        maskLogits[index] += coefficient * protoTensor[channelOffset + index];
-      }
-    }
-  }
-
-  bool _hasPositiveMaskPixels({
-    required Float32List maskLogits,
-    required Rect modelSpaceBox,
-  }) {
-    final widthRatio = _protoWidth / AppConstants.modelInputSize;
-    final heightRatio = _protoHeight / AppConstants.modelInputSize;
-
-    final left = _clampInt(
-      (modelSpaceBox.left * widthRatio).floor(),
-      0,
-      _protoWidth - 1,
-    );
-    final top = _clampInt(
-      (modelSpaceBox.top * heightRatio).floor(),
-      0,
-      _protoHeight - 1,
-    );
-    final right = _clampInt(
-      (modelSpaceBox.right * widthRatio).ceil(),
-      1,
-      _protoWidth,
-    );
-    final bottom = _clampInt(
-      (modelSpaceBox.bottom * heightRatio).ceil(),
-      1,
-      _protoHeight,
-    );
-
-    if (right <= left || bottom <= top) {
-      return false;
-    }
-
-    for (var y = top; y < bottom; y++) {
-      final rowOffset = y * _protoWidth;
-      for (var x = left; x < right; x++) {
-        if (maskLogits[rowOffset + x] > AppConstants.maskLogitThreshold) {
-          return true;
-        }
-      }
-    }
-
-    return false;
   }
 
   void _validateModelSignature() {
@@ -948,12 +854,12 @@ class ModelService {
     }
 
     final inputTensor = inputTensors.first;
-    if (!_sameShape(inputTensor.shape, _expectedInputShape)) {
-      throw StateError(
-        'Unexpected input tensor shape ${inputTensor.shape}. '
-        'Expected $_expectedInputShape.',
-      );
-    }
+    _inputLayout = ImageTensorLayout.fromShape(
+      inputTensor.shape,
+      channels: 3,
+      height: AppConstants.modelInputSize,
+      width: AppConstants.modelInputSize,
+    );
     if (inputTensor.type != TensorType.float32) {
       throw StateError(
         'Unexpected input tensor type ${inputTensor.type}. '
@@ -973,8 +879,25 @@ class ModelService {
       final tensor = outputTensors[index];
       if (_sameShape(tensor.shape, _expectedDetectionShape)) {
         _detectionOutputIndex = index;
-      } else if (_sameShape(tensor.shape, _expectedProtoShape)) {
+      } else if (_sameShape(tensor.shape, [
+            1,
+            _protoHeight,
+            _protoWidth,
+            _maskChannelCount,
+          ]) ||
+          _sameShape(tensor.shape, [
+            1,
+            _maskChannelCount,
+            _protoHeight,
+            _protoWidth,
+          ])) {
         _protoOutputIndex = index;
+        _protoLayout = ImageTensorLayout.fromShape(
+          tensor.shape,
+          channels: _maskChannelCount,
+          height: _protoHeight,
+          width: _protoWidth,
+        );
       }
     }
 
@@ -983,7 +906,7 @@ class ModelService {
         'Unexpected output tensor shapes: '
         '${outputTensors.map((tensor) => tensor.shape).toList()}. '
         'Expected detection=$_expectedDetectionShape '
-        'and proto=$_expectedProtoShape.',
+        'and proto=[1,160,160,32] or [1,32,160,160].',
       );
     }
 
@@ -996,27 +919,6 @@ class ModelService {
         'det=${detectionTensor.type}, proto=${protoTensor.type}.',
       );
     }
-  }
-
-  double _iou(Rect a, Rect b) {
-    final left = math.max(a.left, b.left);
-    final top = math.max(a.top, b.top);
-    final right = math.min(a.right, b.right);
-    final bottom = math.min(a.bottom, b.bottom);
-
-    final width = right - left;
-    final height = bottom - top;
-    if (width <= 0 || height <= 0) {
-      return 0.0;
-    }
-
-    final intersection = width * height;
-    final union = (a.width * a.height) + (b.width * b.height) - intersection;
-    if (union <= 0) {
-      return 0.0;
-    }
-
-    return intersection / union;
   }
 
   void _logTensorShapes() {
@@ -1158,6 +1060,9 @@ class ModelService {
     _detectionOutputIndex = null;
     _protoOutputIndex = null;
     _tensorWorkspace = null;
+    _inputLayout = null;
+    _protoLayout = null;
+    _didLogTensorShapes = false;
   }
 }
 
