@@ -3,7 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/providers/detection_provider.dart';
-import 'package:calabash_maturity_detection/screens/camera_screen.dart';
+import 'package:calabash_maturity_detection/screens/live_camera_screen.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:calabash_maturity_detection/utils/navigation.dart';
 import 'package:calabash_maturity_detection/widgets/detection_box.dart';
@@ -14,7 +14,10 @@ import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 class ResultScreen extends StatelessWidget {
-  const ResultScreen({super.key});
+  const ResultScreen({super.key, this.returnToLiveCamera = false});
+
+  // Live capture keeps its camera route underneath and resumes it after pop.
+  final bool returnToLiveCamera;
 
   @override
   Widget build(BuildContext context) {
@@ -234,7 +237,7 @@ class ResultScreen extends StatelessWidget {
               OutlinedButton.icon(
                 onPressed: () => _startNewScan(context, provider),
                 icon: const Icon(Icons.videocam_rounded, size: 20),
-                label: const Text('Use Camera'),
+                label: const Text('Capture Again'),
               ),
             ],
           ],
@@ -358,13 +361,18 @@ class ResultScreen extends StatelessWidget {
     return OutlinedButton.icon(
       onPressed: () => _startNewScan(context, provider),
       icon: const Icon(Icons.refresh_rounded, size: 20),
-      label: const Text('Scan Again'),
+      label: const Text('Capture Again'),
     );
   }
 
   void _startNewScan(BuildContext context, DetectionProvider provider) {
+    final navigator = Navigator.of(context);
+    if (returnToLiveCamera && navigator.canPop()) {
+      navigator.pop();
+    } else {
+      navigator.pushReplacement(fadeRoute(const LiveCameraScreen()));
+    }
     provider.clearCurrentResult();
-    Navigator.of(context).pushReplacement(fadeRoute(const CameraScreen()));
   }
 
   Future<void> _tryAnotherImage(DetectionProvider provider) async {

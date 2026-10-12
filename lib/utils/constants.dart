@@ -7,13 +7,18 @@ class AppConstants {
   static const String modelAssetPath = 'assets/model/model.tflite';
 
   static const int modelInputSize = 640;
-  static const double confidenceThreshold = 0.25;
-  static const double iouThreshold = 0.70;
+  static const double confidenceThreshold = 0.45;
+  static const double iouThreshold = 0.60;
   static const int maxDetections = 300;
   static const double maskLogitThreshold = 0.0;
+  static const int minimumMaskPixels = 4;
+  static const double minimumMaskFraction = 0.01;
   static const double liveHighConfidenceThreshold = 0.70;
   static const double liveWeakConfidenceThreshold = 0.50;
-  static const int liveStableClassFrames = 2;
+  static const int liveStableClassFrames = 3;
+  static const int liveConfirmationFrames = 2;
+  static const int liveMaxDetections = 20;
+  static const int liveCameraFps = 30;
   static const double liveTrackIouThreshold = 0.20;
   static const double liveTrackCenterDistanceThreshold = 0.18;
   static const double liveOverlayAnimationMaxCenterDistance = 0.08;
@@ -22,7 +27,7 @@ class AppConstants {
   static const int liveReadyGraceFrames = 1;
   static const double liveReadyCenterDistanceThreshold = 0.05;
   static const double liveReadySizeDeltaThreshold = 0.12;
-  static const Duration liveInferenceMinInterval = Duration(milliseconds: 150);
+  static const Duration liveInferenceMinInterval = Duration(milliseconds: 100);
   static const Duration liveOverlayAnimationDuration = Duration(
     milliseconds: 120,
   );

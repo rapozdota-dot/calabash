@@ -571,6 +571,8 @@ class _LiveInferenceWorkerRuntime {
     final service = ModelService(
       modelBuffer: Uint8List.fromList(modelBytes),
       backendConfig: config,
+      confidenceThreshold: AppConstants.liveWeakConfidenceThreshold,
+      maxDetections: AppConstants.liveMaxDetections,
     );
 
     try {

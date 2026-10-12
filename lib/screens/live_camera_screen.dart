@@ -448,7 +448,9 @@ class _LiveCaptureControls extends StatelessWidget {
       return;
     }
 
-    await Navigator.of(context).push(fadeRoute(const ResultScreen()));
+    await Navigator.of(
+      context,
+    ).push(fadeRoute(const ResultScreen(returnToLiveCamera: true)));
     if (context.mounted) {
       await context.read<LiveCameraProvider>().resumeLiveDetection();
     }

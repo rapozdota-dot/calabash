@@ -86,7 +86,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get shouldShowNoCalabash =>
       isCameraReady &&
       _hasProcessedFrame &&
-      !_isProcessingFrame &&
+      _stabilityStatus == LiveStabilityStatus.noCalabashDetected &&
       _liveDetections.isEmpty &&
       _errorMessage == null;
 
@@ -299,7 +299,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         selectedCamera,
         ResolutionPreset.medium,
         enableAudio: false,
-        fps: 15,
+        fps: AppConstants.liveCameraFps,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
 
@@ -518,7 +518,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     final activeFrameCompleter = Completer<void>();
     _activeFrameCompleter = activeFrameCompleter;
     _isProcessingFrame = true;
-    _safeNotifyListeners();
+    // Subsequent frames publish once on completion instead of flickering busy/idle.
+    if (!_hasProcessedFrame) _safeNotifyListeners();
 
     try {
       final inferenceStartAt = DateTime.now();

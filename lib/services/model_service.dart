@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/services/image_tensor_layout.dart';
+import 'package:calabash_maturity_detection/services/segmentation_postprocessor.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -110,11 +111,17 @@ class ModelService {
   ModelService({
     Uint8List? modelBuffer,
     TfliteBackendConfig backendConfig = TfliteBackendConfig.cpu2,
+    double confidenceThreshold = AppConstants.confidenceThreshold,
+    int maxDetections = AppConstants.maxDetections,
   }) : _modelBuffer = modelBuffer,
-       _backendConfig = backendConfig;
+       _backendConfig = backendConfig,
+       _confidenceThreshold = confidenceThreshold,
+       _maxDetections = maxDetections;
 
   final Uint8List? _modelBuffer;
   final TfliteBackendConfig _backendConfig;
+  final double _confidenceThreshold;
+  final int _maxDetections;
 
   Interpreter? _interpreter;
   Delegate? _delegate;
@@ -303,12 +310,18 @@ class ModelService {
         candidateParsingStopwatch.elapsedMicroseconds;
 
     final nmsStopwatch = Stopwatch()..start();
-    final nmsCandidates = _applyClassAwareNms(candidates);
+    final nmsCandidates = SegmentationPostprocessor.suppressDuplicates(
+      candidates,
+      boxOf: (candidate) => candidate.modelSpaceBox,
+      confidenceOf: (candidate) => candidate.confidence,
+      iouThreshold: AppConstants.iouThreshold,
+      maxDetections: _maxDetections,
+    );
     nmsStopwatch.stop();
     timings.nmsMicros = nmsStopwatch.elapsedMicroseconds;
 
     var finalCandidates = nmsCandidates;
-    try {
+    if (nmsCandidates.isNotEmpty) {
       final protoStopwatch = Stopwatch()..start();
       _copyProtoTensor(
         rawProto: workspace.protoOutputBuffer,
@@ -326,10 +339,6 @@ class ModelService {
       );
       maskStopwatch.stop();
       timings.maskReconstructionMicros = maskStopwatch.elapsedMicroseconds;
-    } catch (error) {
-      if (kDebugMode) {
-        debugPrint('Mask filtering skipped. Error: $error');
-      }
     }
 
     final detections = finalCandidates
@@ -536,7 +545,7 @@ class ModelService {
       if (!_isValidClassIndex(bestClass) ||
           !bestScore.isFinite ||
           bestScore > 1 ||
-          bestScore <= AppConstants.confidenceThreshold) {
+          bestScore <= _confidenceThreshold) {
         continue;
       }
 
@@ -589,6 +598,7 @@ class ModelService {
           anchor: anchor,
         );
       }
+      if (maskCoefficients.any((value) => !value.isFinite)) continue;
 
       final candidate = _SegmentationCandidate(
         modelSpaceBox: clippedModelBox,
@@ -676,42 +686,6 @@ class ModelService {
     );
   }
 
-  List<_SegmentationCandidate> _applyClassAwareNms(
-    List<_SegmentationCandidate> candidates,
-  ) {
-    if (candidates.length <= 1) {
-      return candidates;
-    }
-
-    final sorted = [...candidates]
-      ..sort((a, b) => b.confidence.compareTo(a.confidence));
-    final kept = <_SegmentationCandidate>[];
-
-    for (final candidate in sorted) {
-      var shouldKeep = true;
-
-      for (final picked in kept) {
-        if (candidate.classIndex != picked.classIndex) {
-          continue;
-        }
-        if (_iou(candidate.modelSpaceBox, picked.modelSpaceBox) >
-            AppConstants.iouThreshold) {
-          shouldKeep = false;
-          break;
-        }
-      }
-
-      if (shouldKeep) {
-        kept.add(candidate);
-      }
-      if (kept.length >= AppConstants.maxDetections) {
-        break;
-      }
-    }
-
-    return kept;
-  }
-
   List<_SegmentationCandidate> _attachMasksAndFilterCandidates({
     required List<_SegmentationCandidate> candidates,
     required Float32List protoTensor,
@@ -726,24 +700,35 @@ class ModelService {
     var droppedByMask = 0;
 
     for (final candidate in candidates) {
-      _writeMaskLogits(
-        maskCoefficients: candidate.maskCoefficients,
-        protoTensor: protoTensor,
-        maskLogits: maskLogitsBuffer,
+      SegmentationPostprocessor.reconstructMask(
+        coefficients: candidate.maskCoefficients,
+        prototypes: protoTensor,
+        logits: maskLogitsBuffer,
+        modelBox: candidate.modelSpaceBox,
+        modelSize: AppConstants.modelInputSize,
+        width: _protoWidth,
+        height: _protoHeight,
       );
-      if (_hasPositiveMaskPixels(
-        maskLogits: maskLogitsBuffer,
-        modelSpaceBox: candidate.modelSpaceBox,
+      if (SegmentationPostprocessor.hasMaskSupport(
+        logits: maskLogitsBuffer,
+        modelBox: candidate.modelSpaceBox,
+        modelSize: AppConstants.modelInputSize,
+        width: _protoWidth,
+        height: _protoHeight,
+        threshold: AppConstants.maskLogitThreshold,
+        minimumPixels: AppConstants.minimumMaskPixels,
+        minimumFraction: AppConstants.minimumMaskFraction,
       )) {
-        kept.add(
-          candidate.copyWith(
-            visualMask: _buildDisplayMask(
-              candidate: candidate,
-              maskLogits: maskLogitsBuffer,
-              metadata: metadata,
-            ),
-          ),
+        final mask = _buildDisplayMask(
+          candidate: candidate,
+          maskLogits: maskLogitsBuffer,
+          metadata: metadata,
         );
+        if (mask != null && !mask.isEmpty) {
+          kept.add(candidate.copyWith(visualMask: mask));
+        } else {
+          droppedByMask++;
+        }
       } else {
         droppedByMask++;
       }
@@ -820,33 +805,12 @@ class ModelService {
       ),
       width: maskWidth,
       height: maskHeight,
-      pixels: _smoothMask(pixels, maskWidth, maskHeight),
+      pixels: SegmentationPostprocessor.smoothMask(
+        pixels,
+        maskWidth,
+        maskHeight,
+      ),
     );
-  }
-
-  Uint8List _smoothMask(Uint8List source, int width, int height) {
-    final smoothed = Uint8List(source.length);
-
-    for (var y = 0; y < height; y++) {
-      for (var x = 0; x < width; x++) {
-        var activeNeighbors = 0;
-        for (var dy = -1; dy <= 1; dy++) {
-          for (var dx = -1; dx <= 1; dx++) {
-            final nx = x + dx;
-            final ny = y + dy;
-            if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
-              continue;
-            }
-            activeNeighbors += source[(ny * width) + nx];
-          }
-        }
-        if (activeNeighbors >= 4) {
-          smoothed[(y * width) + x] = 1;
-        }
-      }
-    }
-
-    return smoothed;
   }
 
   void _copyProtoTensor({
@@ -868,70 +832,6 @@ class ModelService {
         'layout=$_protoLayout',
       );
     }
-  }
-
-  void _writeMaskLogits({
-    required Float32List maskCoefficients,
-    required Float32List protoTensor,
-    required Float32List maskLogits,
-  }) {
-    maskLogits.fillRange(0, maskLogits.length, 0.0);
-
-    for (var channel = 0; channel < _maskChannelCount; channel++) {
-      final coefficient = maskCoefficients[channel];
-      if (coefficient == 0.0) {
-        continue;
-      }
-
-      final channelOffset = channel * _protoPlaneSize;
-      for (var index = 0; index < maskLogits.length; index++) {
-        maskLogits[index] += coefficient * protoTensor[channelOffset + index];
-      }
-    }
-  }
-
-  bool _hasPositiveMaskPixels({
-    required Float32List maskLogits,
-    required Rect modelSpaceBox,
-  }) {
-    final widthRatio = _protoWidth / AppConstants.modelInputSize;
-    final heightRatio = _protoHeight / AppConstants.modelInputSize;
-
-    final left = _clampInt(
-      (modelSpaceBox.left * widthRatio).floor(),
-      0,
-      _protoWidth - 1,
-    );
-    final top = _clampInt(
-      (modelSpaceBox.top * heightRatio).floor(),
-      0,
-      _protoHeight - 1,
-    );
-    final right = _clampInt(
-      (modelSpaceBox.right * widthRatio).ceil(),
-      1,
-      _protoWidth,
-    );
-    final bottom = _clampInt(
-      (modelSpaceBox.bottom * heightRatio).ceil(),
-      1,
-      _protoHeight,
-    );
-
-    if (right <= left || bottom <= top) {
-      return false;
-    }
-
-    for (var y = top; y < bottom; y++) {
-      final rowOffset = y * _protoWidth;
-      for (var x = left; x < right; x++) {
-        if (maskLogits[rowOffset + x] > AppConstants.maskLogitThreshold) {
-          return true;
-        }
-      }
-    }
-
-    return false;
   }
 
   void _validateModelSignature() {
@@ -1012,27 +912,6 @@ class ModelService {
         'det=${detectionTensor.type}, proto=${protoTensor.type}.',
       );
     }
-  }
-
-  double _iou(Rect a, Rect b) {
-    final left = math.max(a.left, b.left);
-    final top = math.max(a.top, b.top);
-    final right = math.min(a.right, b.right);
-    final bottom = math.min(a.bottom, b.bottom);
-
-    final width = right - left;
-    final height = bottom - top;
-    if (width <= 0 || height <= 0) {
-      return 0.0;
-    }
-
-    final intersection = width * height;
-    final union = (a.width * a.height) + (b.width * b.height) - intersection;
-    if (union <= 0) {
-      return 0.0;
-    }
-
-    return intersection / union;
   }
 
   void _logTensorShapes() {
