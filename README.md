@@ -51,6 +51,22 @@ flutter run
 
 ## Live Camera Performance
 
+Live results allow up to three seconds of processing, but reject camera frames
+that waited over 250 ms before inference. Overlay expiry adapts to the measured
+processing time (2 to 3.5 seconds), avoiding starvation on slower phones while
+still removing missing detections immediately. Capture/gallery thresholds and
+the 640x640 model are unchanged. Live uses the same base confidence threshold,
+requires two observations, and presents weaker matches as tentative labels.
+
+Channel-first mask prototypes are consumed directly without copying the full
+tensor on each frame. Backend selection retains a warm-up and uses one timed
+run per backend to reduce initial setup work. Device FPS must be measured on
+hardware; these changes do not imply a particular frame rate.
+
+The camera supports tap-to-focus/exposure where available. The home and scan
+pages scroll for small screens and larger text, and page transitions respect
+the device's reduced-motion preference.
+
 Live capture uses the back camera with `ResolutionPreset.medium`, YUV420 image
 stream frames, and the existing 640x640 YOLOv8 segmentation model.
 

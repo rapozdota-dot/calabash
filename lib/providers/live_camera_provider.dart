@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:calabash_maturity_detection/providers/live_detection_tracker.dart';
+import 'package:calabash_maturity_detection/providers/live_result_policy.dart';
 import 'package:calabash_maturity_detection/services/camera_image_converter.dart';
 import 'package:calabash_maturity_detection/services/live_inference_worker.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
@@ -50,6 +51,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _isInitializingSession = false;
   bool _isProcessingFrame = false;
   bool _hasProcessedFrame = false;
+  Duration _lastProcessingTime = Duration.zero;
+  bool get isLiveSlow =>
+      _lastProcessingTime > const Duration(milliseconds: 1200);
   bool _shouldRestoreOnResume = false;
   bool _isTorchOn = false;
   bool _isSettingTorch = false;
@@ -542,6 +546,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
       final modelResult = await worker.detect(workerFrame);
       final inferenceEndAt = DateTime.now();
+      _lastProcessingTime = inferenceEndAt.difference(inferenceStartAt);
       if (_isDisposed || _cameraController != activeController) {
         _performanceTracker.recordFrameDropped();
         return;
@@ -568,6 +573,11 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (!_shouldPublishResult(frame, modelResult, publishAt)) {
         _performanceTracker.recordStaleResultSkipped();
         _expireOverlayIfEmergencyStale(publishAt);
+        if (publishAt.difference(frame.capturedAt) >
+            LiveResultPolicy.maxResultAge) {
+          _errorMessage =
+              'Live preview is taking longer. Tap capture for a clear result.';
+        }
         return;
       }
 
@@ -639,8 +649,11 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       return false;
     }
 
-    final resultAge = publishAt.difference(frame.capturedAt);
-    return resultAge <= AppConstants.liveResultMaxAge;
+    return LiveResultPolicy.canPublish(
+      capturedAt: frame.capturedAt,
+      startedAt: _lastInferenceStartedAt ?? frame.capturedAt,
+      publishedAt: publishAt,
+    );
   }
 
   bool _clearLiveDetections({required bool cancelEmergencyExpiration}) {
@@ -686,7 +699,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   void _scheduleOverlayEmergencyExpiration(DateTime detectionPublishedAt) {
     _overlayEmergencyExpirationTimer?.cancel();
     _overlayEmergencyExpirationTimer = Timer(
-      AppConstants.liveOverlayEmergencyStaleTimeout,
+      LiveResultPolicy.overlayLifetime(_lastProcessingTime),
       () {
         if (_isDisposed || _lastDetectionPublishedAt != detectionPublishedAt) {
           return;
@@ -704,7 +717,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     final lastDetectionPublishedAt = _lastDetectionPublishedAt;
     if (lastDetectionPublishedAt == null ||
         now.difference(lastDetectionPublishedAt) <
-            AppConstants.liveOverlayEmergencyStaleTimeout) {
+            LiveResultPolicy.overlayLifetime(_lastProcessingTime)) {
       return false;
     }
 

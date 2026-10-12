@@ -162,7 +162,7 @@ class _LivePreview extends StatelessWidget {
               children: [
                 Positioned.fromRect(
                   rect: previewRect,
-                  child: RepaintBoundary(child: CameraPreview(controller)),
+                  child: _FocusPreview(controller: controller),
                 ),
                 _LiveDetectionOverlay(previewRect: previewRect),
                 const _ReadinessIndicatorHost(),
@@ -214,6 +214,67 @@ class _LivePreview extends StatelessWidget {
   }
 }
 
+class _FocusPreview extends StatefulWidget {
+  const _FocusPreview({required this.controller});
+  final CameraController controller;
+  @override
+  State<_FocusPreview> createState() => _FocusPreviewState();
+}
+
+class _FocusPreviewState extends State<_FocusPreview> {
+  Offset? _point;
+  int _request = 0;
+  Future<void> _focus(Offset point, Size size) async {
+    final request = ++_request;
+    setState(() => _point = point);
+    final normalized = Offset(
+      (point.dx / size.width).clamp(0.0, 1.0),
+      (point.dy / size.height).clamp(0.0, 1.0),
+    );
+    try {
+      await widget.controller.setFocusPoint(normalized);
+      if (mounted && request == _request) {
+        await widget.controller.setExposurePoint(normalized);
+      }
+    } on CameraException {
+      // Fixed-focus cameras may not support focus or exposure points.
+    } finally {
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      if (mounted && request == _request) setState(() => _point = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) => GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (details) =>
+          _focus(details.localPosition, constraints.biggest),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          RepaintBoundary(child: CameraPreview(widget.controller)),
+          if (_point != null)
+            Positioned(
+              left: _point!.dx - 24,
+              top: _point!.dy - 24,
+              child: IgnorePointer(
+                child: Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.white, width: 1.5),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
 class _LiveDetectionOverlay extends StatelessWidget {
   const _LiveDetectionOverlay({required this.previewRect});
 
@@ -250,7 +311,6 @@ class _LiveDetectionOverlay extends StatelessWidget {
                 curve: AppConstants.liveOverlayAnimationCurve,
               ),
             ),
-            if (state.shouldShowNoCalabash) const _NoCalabashOverlay(),
           ],
         ),
       ),
@@ -261,7 +321,8 @@ class _LiveDetectionOverlay extends StatelessWidget {
     return switch (detection.confidenceTier) {
       LiveConfidenceTier.normal =>
         '#$number ${detection.detection.maturityClass.label}',
-      LiveConfidenceTier.weak => 'Analyzing...',
+      LiveConfidenceTier.weak =>
+        'Possible ${detection.detection.maturityClass.label}',
       LiveConfidenceTier.low => 'Low confidence',
     };
   }
@@ -270,7 +331,7 @@ class _LiveDetectionOverlay extends StatelessWidget {
     return switch (detection.confidenceTier) {
       LiveConfidenceTier.normal =>
         '${(detection.detection.confidence * 100).toStringAsFixed(0)}%',
-      LiveConfidenceTier.weak => 'Keep the fruit steady',
+      LiveConfidenceTier.weak => 'Hold steady to confirm',
       LiveConfidenceTier.low => 'Reposition camera',
     };
   }
@@ -292,6 +353,9 @@ class _ReadinessIndicatorHost extends StatelessWidget {
     final status = context.select<LiveCameraProvider, LiveStabilityStatus>(
       (provider) => provider.stabilityStatus,
     );
+    final hasProcessed = context.select<LiveCameraProvider, bool>(
+      (provider) => provider.hasProcessedFrame,
+    );
 
     return Positioned(
       left: AppConstants.compactCardPadding,
@@ -299,16 +363,17 @@ class _ReadinessIndicatorHost extends StatelessWidget {
       top: AppConstants.compactCardPadding,
       child: Align(
         alignment: Alignment.topCenter,
-        child: _ReadinessIndicator(status: status),
+        child: _ReadinessIndicator(status: status, hasProcessed: hasProcessed),
       ),
     );
   }
 }
 
 class _ReadinessIndicator extends StatelessWidget {
-  const _ReadinessIndicator({required this.status});
+  const _ReadinessIndicator({required this.status, required this.hasProcessed});
 
   final LiveStabilityStatus status;
+  final bool hasProcessed;
 
   @override
   Widget build(BuildContext context) {
@@ -323,13 +388,19 @@ class _ReadinessIndicator extends StatelessWidget {
       LiveStabilityStatus.holdSteady => Icons.pan_tool_alt_rounded,
       LiveStabilityStatus.ready => Icons.check_circle_rounded,
     };
-    final label = switch (status) {
-      LiveStabilityStatus.noCalabashDetected => 'NO CALABASH DETECTED',
-      LiveStabilityStatus.holdSteady => 'HOLD STEADY',
-      LiveStabilityStatus.ready => 'READY',
-    };
+    final label = !hasProcessed
+        ? 'Looking for calabash...'
+        : switch (status) {
+            LiveStabilityStatus.noCalabashDetected =>
+              'No calabash fruits detected',
+            LiveStabilityStatus.holdSteady => 'Hold steady',
+            LiveStabilityStatus.ready => 'Ready to capture',
+          };
 
-    return DecoratedBox(
+    return AnimatedContainer(
+      duration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : const Duration(milliseconds: 220),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.92),
         borderRadius: BorderRadius.circular(AppConstants.overlayRadius),
@@ -404,12 +475,22 @@ class _LiveCaptureControls extends StatelessWidget {
             isBusy: isBusy,
             onPressed: () => _captureAndOpenResult(context),
           ),
+          const SizedBox(height: 8),
+          const Text(
+            'Capture for full analysis',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     );
   }
 
   Future<void> _captureAndOpenResult(BuildContext context) async {
+    HapticFeedback.lightImpact();
     final liveProvider = context.read<LiveCameraProvider>();
     final detectionProvider = context.read<DetectionProvider>();
     final capturedImage = await liveProvider.captureStillImage();
@@ -562,6 +643,7 @@ class _LiveStatusBarHost extends StatelessWidget {
       (provider) => _LiveStatusState(
         isProcessing: provider.isProcessingFrame,
         hasDetections: provider.liveDetections.isNotEmpty,
+        isSlow: provider.isLiveSlow,
         errorMessage: provider.captureErrorMessage ?? provider.errorMessage,
       ),
     );
@@ -569,11 +651,12 @@ class _LiveStatusBarHost extends StatelessWidget {
     return Positioned(
       left: AppConstants.compactCardPadding,
       right: AppConstants.compactCardPadding,
-      bottom: 148,
+      top: 68,
       child: _LiveStatusBar(
         isProcessing: state.isProcessing,
         hasDetections: state.hasDetections,
         errorMessage: state.errorMessage,
+        isSlow: state.isSlow,
       ),
     );
   }
@@ -606,11 +689,13 @@ class _LiveStatusState {
     required this.isProcessing,
     required this.hasDetections,
     required this.errorMessage,
+    required this.isSlow,
   });
 
   final bool isProcessing;
   final bool hasDetections;
   final String? errorMessage;
+  final bool isSlow;
 
   @override
   bool operator ==(Object other) {
@@ -618,11 +703,13 @@ class _LiveStatusState {
         other is _LiveStatusState &&
             other.isProcessing == isProcessing &&
             other.hasDetections == hasDetections &&
+            other.isSlow == isSlow &&
             other.errorMessage == errorMessage;
   }
 
   @override
-  int get hashCode => Object.hash(isProcessing, hasDetections, errorMessage);
+  int get hashCode =>
+      Object.hash(isProcessing, hasDetections, errorMessage, isSlow);
 }
 
 class _CaptureButtonState {
@@ -730,76 +817,30 @@ class _PermissionMessage extends StatelessWidget {
   }
 }
 
-class _NoCalabashOverlay extends StatelessWidget {
-  const _NoCalabashOverlay();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Container(
-        margin: const EdgeInsets.all(24),
-        padding: const EdgeInsets.symmetric(
-          horizontal: 18,
-          vertical: AppConstants.cardPadding,
-        ),
-        decoration: BoxDecoration(
-          color: AppConstants.overlayScrim,
-          borderRadius: BorderRadius.circular(AppConstants.overlayRadius),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.search_off_rounded, color: Colors.white, size: 34),
-            const SizedBox(height: 8),
-            Text(
-              'No calabash detected',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: Colors.white,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Point the camera toward a calabash fruit.',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.white.withValues(alpha: 0.84),
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _LiveStatusBar extends StatelessWidget {
   const _LiveStatusBar({
     required this.isProcessing,
     required this.hasDetections,
     required this.errorMessage,
+    required this.isSlow,
   });
 
   final bool isProcessing;
   final bool hasDetections;
   final String? errorMessage;
+  final bool isSlow;
 
   @override
   Widget build(BuildContext context) {
     final text =
         errorMessage ??
-        (isProcessing
-            ? 'Analyzing...'
+        (isSlow
+            ? 'Hold steady. Capture gives a more detailed result.'
             : hasDetections
-            ? 'Calabash detected'
-            : 'Waiting for calabash');
+            ? 'Tap capture to confirm maturity'
+            : 'Tap to focus. Move closer in good light.');
     final icon = errorMessage != null
         ? Icons.error_outline_rounded
-        : isProcessing
-        ? Icons.autorenew_rounded
         : hasDetections
         ? Icons.check_circle_rounded
         : Icons.sensors_rounded;

@@ -1,6 +1,6 @@
-import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/screens/about_screen.dart';
 import 'package:calabash_maturity_detection/screens/camera_screen.dart';
+import 'package:calabash_maturity_detection/screens/live_camera_screen.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:calabash_maturity_detection/utils/navigation.dart';
 import 'package:flutter/material.dart';
@@ -9,171 +9,131 @@ class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          AppConstants.appName,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'About',
-            onPressed: () {
-              Navigator.of(context).push(fadeRoute(const AboutScreen()));
-            },
-            icon: const Icon(Icons.info_outline_rounded),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(AppConstants.pagePadding),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const _HeroHeader(),
-              const SizedBox(height: AppConstants.sectionSpacing),
-              const _CalabashIllustration(),
-              const SizedBox(height: 22),
-              ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.of(context).push(fadeRoute(const CameraScreen()));
-                },
-                icon: const Icon(Icons.document_scanner_rounded),
-                label: const Text('Scan Fruit'),
-              ),
-              const Spacer(),
-              const _OfflineBadge(),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _HeroHeader extends StatelessWidget {
-  const _HeroHeader();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(AppConstants.cardRadius),
-        border: Border.all(color: AppConstants.secondaryLightGreen),
-      ),
-      child: Column(
-        children: [
-          Text(
-            AppConstants.appName,
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w900,
-              color: AppConstants.primaryGreen,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Scan a calabash image and get maturity results directly on your phone.',
-            textAlign: TextAlign.center,
-            style: Theme.of(
-              context,
-            ).textTheme.bodyLarge?.copyWith(color: AppConstants.softText),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _OfflineBadge extends StatelessWidget {
-  const _OfflineBadge();
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        const Icon(Icons.offline_bolt_rounded, size: 18, color: Colors.black45),
-        const SizedBox(width: 6),
-        Text(
-          'Works offline once installed',
-          textAlign: TextAlign.center,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: AppConstants.mutedText,
-            fontWeight: FontWeight.w700,
-          ),
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: const Text('Calabash'),
+      actions: [
+        IconButton(
+          tooltip: 'About this project',
+          icon: const Icon(Icons.info_outline_rounded),
+          onPressed: () =>
+              Navigator.of(context).push(fadeRoute(const AboutScreen())),
         ),
       ],
-    );
-  }
-}
-
-class _CalabashIllustration extends StatelessWidget {
-  const _CalabashIllustration();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 180,
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(22),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFFE4F2DF), Color(0xFFD3EAD0)],
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          _fruit(MaturityClass.immature),
-          _fruit(MaturityClass.mature),
-          _fruit(MaturityClass.overmature),
-        ],
-      ),
-    );
-  }
-
-  Widget _fruit(MaturityClass maturityClass) {
-    final color = maturityClass.color;
-
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Stack(
-          alignment: Alignment.topCenter,
-          children: [
-            Container(
-              margin: const EdgeInsets.only(top: 10),
-              width: 48,
-              height: 58,
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: BorderRadius.circular(24),
+    ),
+    body: SafeArea(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 600),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: 1),
+              duration: MediaQuery.disableAnimationsOf(context)
+                  ? Duration.zero
+                  : const Duration(milliseconds: 380),
+              builder: (context, value, child) => Opacity(
+                opacity: value,
+                child: Transform.translate(
+                  offset: Offset(0, 12 * (1 - value)),
+                  child: child,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(28),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(28),
+                      gradient: const LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Color(0xFFE5EEDC), Color(0xFFF2EBDD)],
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(
+                          Icons.eco_rounded,
+                          size: 58,
+                          color: AppConstants.primaryGreen,
+                        ),
+                        const SizedBox(height: 26),
+                        Text(
+                          'Know your fruit.\nPlan your harvest.',
+                          style: Theme.of(context).textTheme.headlineMedium
+                              ?.copyWith(
+                                color: const Color(0xFF234429),
+                                fontWeight: FontWeight.w800,
+                                height: 1.15,
+                              ),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'Calabash Maturity Detection',
+                          style: TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Point your camera at a calabash, then capture a photo to check its maturity.',
+                          style: TextStyle(
+                            color: AppConstants.softText,
+                            height: 1.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  FilledButton.icon(
+                    onPressed: () => Navigator.of(
+                      context,
+                    ).push(fadeRoute(const LiveCameraScreen())),
+                    icon: const Icon(Icons.center_focus_strong_rounded),
+                    label: const Text('Open Live Camera'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(56),
+                      backgroundColor: AppConstants.primaryGreen,
+                      foregroundColor: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: () => Navigator.of(
+                      context,
+                    ).push(fadeRoute(const CameraScreen())),
+                    icon: const Icon(Icons.add_photo_alternate_outlined),
+                    label: const Text('Photo or Gallery'),
+                  ),
+                  const SizedBox(height: 28),
+                  const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.offline_bolt_outlined,
+                        size: 18,
+                        color: AppConstants.mutedText,
+                      ),
+                      SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          'Private. Offline. Ready for the field.',
+                          style: TextStyle(
+                            color: AppConstants.mutedText,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
-            Container(
-              width: 9,
-              height: 14,
-              decoration: BoxDecoration(
-                color: AppConstants.accentBrown,
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ),
-          ],
+          ),
         ),
-        const SizedBox(height: 10),
-        Text(
-          maturityClass.label,
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-        ),
-      ],
-    );
-  }
+      ),
+    ),
+  );
 }

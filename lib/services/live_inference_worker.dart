@@ -514,7 +514,7 @@ class _LiveInferenceWorkerRuntime {
         modelBytes: modelBytes,
         config: config,
         warmupRuns: 1,
-        measuredRuns: 2,
+        measuredRuns: 1,
       );
       attempts.add(attempt.benchmark);
 

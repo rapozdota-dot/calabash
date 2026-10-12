@@ -6,6 +6,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('photo-level confidence appears as tentative after confirmation', () {
+    final tracker = LiveDetectionTracker();
+    final candidate = _detection(left: 0.1, top: 0.1, confidence: 0.47);
+    expect(tracker.update([candidate]).detections, isEmpty);
+    final result = tracker.update([candidate]);
+    expect(result.detections.single.confidenceTier, LiveConfidenceTier.weak);
+    expect(result.stabilityStatus, LiveStabilityStatus.holdSteady);
+  });
   test('keeps stable IDs when matched detections arrive reordered', () {
     final tracker = LiveDetectionTracker(confirmationFrames: 1);
     final first = tracker.update([

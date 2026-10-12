@@ -14,7 +14,8 @@ class AppConstants {
   static const int minimumMaskPixels = 4;
   static const double minimumMaskFraction = 0.01;
   static const double liveHighConfidenceThreshold = 0.70;
-  static const double liveWeakConfidenceThreshold = 0.50;
+  // Share photo sensitivity; tentative live labels still need two observations.
+  static const double liveWeakConfidenceThreshold = confidenceThreshold;
   static const int liveStableClassFrames = 3;
   static const int liveConfirmationFrames = 2;
   static const int liveMaxDetections = 20;

@@ -323,17 +323,24 @@ class ModelService {
     var finalCandidates = nmsCandidates;
     if (nmsCandidates.isNotEmpty) {
       final protoStopwatch = Stopwatch()..start();
-      _copyProtoTensor(
-        rawProto: workspace.protoOutputBuffer,
-        channelFirstProto: workspace.protoChannelFirstBuffer,
-      );
+      // Current exports are already channel-first. No 3 MB copy per frame.
+      final prototypes = _protoLayout == ImageTensorLayout.channelsFirst
+          ? workspace.protoOutputBuffer
+          : workspace.protoChannelFirstBuffer;
+      if (nmsCandidates.isNotEmpty &&
+          _protoLayout != ImageTensorLayout.channelsFirst) {
+        _copyProtoTensor(
+          rawProto: workspace.protoOutputBuffer,
+          channelFirstProto: workspace.protoChannelFirstBuffer,
+        );
+      }
       protoStopwatch.stop();
       timings.protoExtractionMicros = protoStopwatch.elapsedMicroseconds;
 
       final maskStopwatch = Stopwatch()..start();
       finalCandidates = _attachMasksAndFilterCandidates(
         candidates: nmsCandidates,
-        protoTensor: workspace.protoChannelFirstBuffer,
+        protoTensor: prototypes,
         maskLogitsBuffer: workspace.maskLogitsBuffer,
         metadata: preprocessed.metadata,
       );
