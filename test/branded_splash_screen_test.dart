@@ -64,7 +64,8 @@ void main() {
         );
         expect(find.text('CALABASH'), findsOneWidget);
         expect(find.text('MATURITY DETECTION'), findsOneWidget);
-        expect(find.text('POWERED BY COMPUTER VISION'), findsOneWidget);
+        expect(find.text('POWERED BY YOLOv8n-seg'), findsOneWidget);
+        expect(find.text('POWERED BY COMPUTER VISION'), findsNothing);
         expect(
           find.text('Intelligent Fruit Maturity Assessment'),
           findsNothing,

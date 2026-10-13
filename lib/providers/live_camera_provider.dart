@@ -5,6 +5,7 @@ import 'package:camera/camera.dart';
 import 'package:calabash_maturity_detection/providers/live_detection_tracker.dart';
 import 'package:calabash_maturity_detection/providers/live_result_policy.dart';
 import 'package:calabash_maturity_detection/services/camera_image_converter.dart';
+import 'package:calabash_maturity_detection/services/camera_frame_policy.dart';
 import 'package:calabash_maturity_detection/services/live_inference_worker.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
@@ -25,6 +26,23 @@ enum LiveCameraStatus {
 }
 
 enum _PendingFrameReason { busy, cadence }
+
+class LiveCameraPermissionPolicy {
+  LiveCameraPermissionPolicy._();
+
+  static bool shouldRequestSystemPrompt({
+    required PermissionStatus status,
+    required bool requestPermission,
+  }) => requestPermission && status.isDenied;
+
+  static bool shouldOfferSettings({
+    required PermissionStatus status,
+    required TargetPlatform platform,
+  }) =>
+      status.isPermanentlyDenied ||
+      status.isRestricted ||
+      (platform == TargetPlatform.iOS && status.isDenied);
+}
 
 class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   LiveCameraProvider() {
@@ -102,7 +120,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     return _ensurePermissionAndStart(requestPermission: true);
   }
 
-  Future<void> openSettings() {
+  Future<bool> openSettings() {
+    _shouldRestoreOnResume = true;
     return openAppSettings();
   }
 
@@ -255,7 +274,10 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       var permissionStatus = await Permission.camera.status;
-      if (permissionStatus.isDenied && requestPermission) {
+      if (LiveCameraPermissionPolicy.shouldRequestSystemPrompt(
+        status: permissionStatus,
+        requestPermission: requestPermission,
+      )) {
         permissionStatus = await Permission.camera.request();
       }
 
@@ -269,8 +291,10 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       await _releaseCamera(keepLiveState: true);
-      if (permissionStatus.isPermanentlyDenied ||
-          permissionStatus.isRestricted) {
+      if (LiveCameraPermissionPolicy.shouldOfferSettings(
+        status: permissionStatus,
+        platform: defaultTargetPlatform,
+      )) {
         _setStatus(LiveCameraStatus.permissionPermanentlyDenied);
       } else {
         _setStatus(LiveCameraStatus.permissionDenied);
@@ -301,10 +325,13 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
       final controller = CameraController(
         selectedCamera,
-        ResolutionPreset.medium,
+        CameraFramePolicy.liveResolution(defaultTargetPlatform),
         enableAudio: false,
-        fps: AppConstants.liveCameraFps,
-        imageFormatGroup: ImageFormatGroup.yuv420,
+        fps: CameraFramePolicy.liveFrameRate(
+          defaultTargetPlatform,
+          fallbackFps: AppConstants.liveCameraFps,
+        ),
+        imageFormatGroup: CameraFramePolicy.imageFormat(defaultTargetPlatform),
       );
 
       _cameraController = controller;
@@ -358,6 +385,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       final backendInfo = worker.backendInfo;
       if (backendInfo != null) {
         _performanceTracker.recordBackendInfo(backendInfo);
+        _logLiveBackendInfo(backendInfo);
       }
       _safeNotifyListeners();
     } catch (error) {
@@ -374,6 +402,38 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
   }
+
+  void _logLiveBackendInfo(LiveInferenceBackendInfo backendInfo) {
+    if (kReleaseMode) return;
+
+    final attempts = backendInfo.attempts.map(_formatBackendAttempt).join('; ');
+    debugPrint(
+      'LIVE BACKEND: selected=${backendInfo.label} '
+      'fromCache=${backendInfo.fromCache} attempts=[$attempts]',
+    );
+  }
+
+  String _formatBackendAttempt(TfliteBackendBenchmark attempt) {
+    final config = attempt.config;
+    final label = '${config.label}/${config.threads}t';
+    if (attempt.initialized) {
+      return '$label ok avg=${_formatMicros(attempt.averageMicros)} '
+          'warmup=${_formatMicros(attempt.warmupMicros)}';
+    }
+
+    final error = attempt.errorMessage;
+    if (error == null || error.isEmpty) {
+      return '$label failed';
+    }
+    final compactError = error.replaceAll(RegExp(r'\s+'), ' ');
+    final shortenedError = compactError.length > 96
+        ? compactError.substring(0, 96)
+        : compactError;
+    return '$label failed $shortenedError';
+  }
+
+  String _formatMicros(int micros) =>
+      '${(micros / Duration.microsecondsPerMillisecond).toStringAsFixed(1)}ms';
 
   Future<void> _pauseImageStreamForStillCapture(
     CameraController controller,
@@ -563,6 +623,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       _performanceTracker.recordFrameProcessed(
         _LiveFramePerformanceSample(
           frameTelemetry: frameTelemetry,
+          imageWidth: modelResult.imageWidth,
+          imageHeight: modelResult.imageHeight,
+          detectionCount: modelResult.detections.length,
           conversionTiming: modelResult.conversionTiming,
           modelTimings: modelResult.modelTimings,
           frameTransferMicros: modelResult.frameTransferMicros,
@@ -736,17 +799,11 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     CameraDescription camera,
     DeviceOrientation deviceOrientation,
   ) {
-    final deviceDegrees = switch (deviceOrientation) {
-      DeviceOrientation.portraitUp => 0,
-      DeviceOrientation.landscapeLeft => 90,
-      DeviceOrientation.portraitDown => 180,
-      DeviceOrientation.landscapeRight => 270,
-    };
-
-    if (camera.lensDirection == CameraLensDirection.front) {
-      return (camera.sensorOrientation + deviceDegrees) % 360;
-    }
-    return (camera.sensorOrientation - deviceDegrees + 360) % 360;
+    return CameraFramePolicy.rotationDegrees(
+      platform: defaultTargetPlatform,
+      camera: camera,
+      orientation: deviceOrientation,
+    );
   }
 
   Future<void> _releaseCamera({required bool keepLiveState}) async {
@@ -946,6 +1003,9 @@ class _LiveFrameTelemetry {
 class _LiveFramePerformanceSample {
   const _LiveFramePerformanceSample({
     required this.frameTelemetry,
+    required this.imageWidth,
+    required this.imageHeight,
+    required this.detectionCount,
     required this.conversionTiming,
     required this.modelTimings,
     required this.frameTransferMicros,
@@ -953,6 +1013,9 @@ class _LiveFramePerformanceSample {
   });
 
   final _LiveFrameTelemetry frameTelemetry;
+  final int imageWidth;
+  final int imageHeight;
+  final int detectionCount;
   final CameraImageConversionTiming conversionTiming;
   final ModelPipelineTimings modelTimings;
   final int frameTransferMicros;
@@ -973,6 +1036,11 @@ class _LivePerformanceTracker {
   int _trackCreations = 0;
   int _trackMatches = 0;
   int _trackRemovals = 0;
+  int _detectionsReturned = 0;
+  int? _lastDetectionCount;
+  int? _lastPublishedDetectionCount;
+  int? _lastInputWidth;
+  int? _lastInputHeight;
   int? _lastProcessedFrameId;
   LiveInferenceBackendInfo? _backendInfo;
   int _uiFrameCount = 0;
@@ -1033,12 +1101,14 @@ class _LivePerformanceTracker {
 
   void recordOverlayRefreshed(LiveDetectionUpdate update) {
     _overlayRefreshes++;
+    _lastPublishedDetectionCount = update.detections.length;
     _trackCreations += update.createdTrackCount;
     _trackMatches += update.matchedTrackCount;
     _trackRemovals += update.removedTrackCount;
   }
 
   void recordNoDetectionClear({required bool didClear}) {
+    _lastPublishedDetectionCount = 0;
     if (didClear) {
       _noDetectionClears++;
     }
@@ -1070,6 +1140,10 @@ class _LivePerformanceTracker {
     _framesProcessed++;
     _lastProcessedFrameId = sample.frameTelemetry.frameId;
     _backendInfo = sample.backendInfo;
+    _lastInputWidth = sample.imageWidth;
+    _lastInputHeight = sample.imageHeight;
+    _lastDetectionCount = sample.detectionCount;
+    _detectionsReturned += sample.detectionCount;
 
     _frameTransfer.add(sample.frameTransferMicros);
     _rgbConversion.add(sample.conversionTiming.rgbConversionMicros);
@@ -1092,7 +1166,7 @@ class _LivePerformanceTracker {
   }
 
   void maybeLog({required int pendingFrameCount}) {
-    if (!kDebugMode) {
+    if (kReleaseMode) {
       return;
     }
 
@@ -1124,6 +1198,10 @@ class _LivePerformanceTracker {
       'Overlay refreshes: $_overlayRefreshes\n'
       'No-detection clears: $_noDetectionClears\n'
       'Track create/match/remove: $_trackCreations/$_trackMatches/$_trackRemovals\n'
+      'Detections returned: ${_lastDetectionCount ?? '-'} '
+      '(window total $_detectionsReturned)\n'
+      'Published overlay detections: ${_lastPublishedDetectionCount ?? '-'}\n'
+      'Last stream frame: ${_lastInputWidth == null || _lastInputHeight == null ? '-' : '${_lastInputWidth}x$_lastInputHeight'}\n'
       'Pending: $pendingFrameCount\n'
       'Last frame ID: ${_lastProcessedFrameId ?? '-'}\n\n'
       'UI frames: $_uiFrameCount\n'
@@ -1178,6 +1256,11 @@ class _LivePerformanceTracker {
     _trackCreations = 0;
     _trackMatches = 0;
     _trackRemovals = 0;
+    _detectionsReturned = 0;
+    _lastDetectionCount = null;
+    _lastPublishedDetectionCount = null;
+    _lastInputWidth = null;
+    _lastInputHeight = null;
     _lastProcessedFrameId = null;
     _uiFrameCount = 0;
     _jankyUiFrameCount = 0;

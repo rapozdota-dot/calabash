@@ -35,14 +35,22 @@ reads the tensor signature to choose the correct layout. Images are letterboxed
 to 640x640 with fill 114, packed as RGB float32 / 255, and boxes are decoded
 from normalized coordinates. Prototype output order is identified by shape.
 The 39 detection channels remain 4 box values, 3 class scores, and 32 mask
-coefficients. Class-agnostic NMS removes conflicting maturity predictions on
-strongly overlapping boxes, and only nonempty final masks are counted.
-The photo confidence threshold is 0.45 and the live threshold is 0.50; these
+coefficients. Class-aware NMS removes duplicate predictions within the same
+stage while retaining overlapping fruits of different stages. Only nonempty
+final masks are counted.
+The photo and live confidence thresholds are both 0.45; these
 conservative settings can miss small or difficult fruits and should be checked
 on independent phone images. Mask support requires at least four prototype
 pixels and 1% of the candidate crop, followed by validation after smoothing.
 
 ## Run Locally
+
+The home screen has two direct actions: **Scan Calabash** opens the live camera
+with its capture button, and **Choose from Gallery** opens the image picker and
+then the result. There is no intermediate scan-options page. Cancelling the
+picker keeps the current screen/result intact; repeated scans are blocked while
+picking or analyzing. Result images share Flutter's image cache for dimensions
+and rendering, so changing overlays does not decode the image again.
 
 ```bash
 flutter pub get
@@ -50,6 +58,10 @@ flutter run
 ```
 
 ## Live Camera Performance
+
+Android uses three-plane YUV420 with sensor rotation. iOS uses BGRA8888 with
+four-byte pixels, retaining AVFoundation's already-oriented image buffers.
+Both paths use the same converter, respecting row padding and plane strides.
 
 Live results allow up to three seconds of processing, but reject camera frames
 that waited over 250 ms before inference. Overlay expiry adapts to the measured
@@ -149,11 +161,13 @@ GitHub Actions workflow instead of a local iOS build:
 .github/workflows/build-ios.yml
 ```
 
-The workflow runs on the `feature/camera-shutter` branch and can also be started
-manually with `workflow_dispatch`. It pins Flutter `3.38.7`, installs CocoaPods
-dependencies, runs `flutter build ios --release --no-codesign`, packages
-`Payload/Runner.app` into `build/ios/Calabash-unsigned.ipa`, and uploads that IPA
-as a workflow artifact.
+Automatic iOS builds are disabled. Only start this workflow manually with
+`workflow_dispatch` when an iOS build is explicitly requested. It pins Flutter
+`3.38.7`, runs analysis and tests, installs CocoaPods dependencies during the
+iOS build, and runs `flutter build ios --release --no-codesign`. It packages
+`Payload/Runner.app` into `dist/Calabash-unsigned.ipa` and uploads that IPA as a
+workflow artifact and attaches it to a named iOS GitHub Release for direct
+download. Each build uses its workflow run number as the app build number.
 
 `Calabash-unsigned.ipa` is an unsigned artifact. It must be signed before it can
 be installed on a physical iPhone.
@@ -196,10 +210,10 @@ Every push to `main` or `master` runs the Android release workflow:
 ```
 
 The Android workflow analyzes the project, runs tests, builds the APK, uploads a
-downloadable APK artifact, and publishes a GitHub Release only when manually
-started with `publish_release=true`.
+downloadable APK artifact, and publishes a named GitHub Release on pushes to
+`main` or `master`. Manual runs can disable publication with `publish_release=false`.
 
-Every push to `feature/camera-shutter` runs the iOS unsigned IPA workflow:
+The iOS unsigned IPA workflow is manual-only and does not run on pushes:
 
 ```text
 .github/workflows/build-ios.yml
@@ -207,4 +221,5 @@ Every push to `feature/camera-shutter` runs the iOS unsigned IPA workflow:
 
 The iOS workflow analyzes the project, runs tests, builds an unsigned iOS app,
 packages it as `Calabash-unsigned.ipa`, and uploads the IPA as a downloadable
-artifact.
+artifact and public iOS release asset. iOS releases do not replace the latest
+Android release. The IPA still requires signing before installation.

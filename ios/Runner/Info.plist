@@ -25,7 +25,7 @@
 		<key>LSRequiresIPhoneOS</key>
 		<true/>
 		<key>NSCameraUsageDescription</key>
-		<string>Calabash Maturity Detection uses the camera to capture calabash fruit images for maturity analysis.</string>
+		<string>Calabash uses your camera to detect fruits and assess their maturity using on-device AI processing.</string>
 		<key>NSPhotoLibraryUsageDescription</key>
 		<string>Calabash Maturity Detection uses your photo library so you can select calabash fruit images for maturity analysis.</string>
 		<key>UILaunchStoryboardName</key>

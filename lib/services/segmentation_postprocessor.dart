@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/painting.dart';
 
-/// Shared post-processing for mutually exclusive maturity stages.
+/// YOLO segmentation post-processing shared by live and photo inference.
 class SegmentationPostprocessor {
   SegmentationPostprocessor._();
 
@@ -11,6 +11,7 @@ class SegmentationPostprocessor {
     List<T> candidates, {
     required Rect Function(T) boxOf,
     required double Function(T) confidenceOf,
+    required int Function(T) classOf,
     required double iouThreshold,
     required int maxDetections,
   }) {
@@ -18,11 +19,12 @@ class SegmentationPostprocessor {
       ..sort((a, b) => confidenceOf(b).compareTo(confidenceOf(a)));
     final kept = <T>[];
     for (final candidate in sorted) {
-      // A physical fruit cannot have two maturity labels in the same frame.
+      // Overlapping boxes of different stages can belong to distinct fruits.
       if (kept.any(
         (picked) =>
+            classOf(candidate) == classOf(picked) &&
             intersectionOverUnion(boxOf(candidate), boxOf(picked)) >
-            iouThreshold,
+                iouThreshold,
       )) {
         continue;
       }

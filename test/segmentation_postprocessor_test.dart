@@ -6,33 +6,65 @@ import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('suppresses same-stage duplicates, keeps adjacent fruits', () {
+    const box = Rect.fromLTWH(0.1, 0.1, 0.3, 0.3);
+    const strong = Detection(
+      boundingBox: box,
+      maturityClass: MaturityClass.mature,
+      confidence: 0.95,
+    );
+    const duplicate = Detection(
+      boundingBox: Rect.fromLTWH(0.11, 0.1, 0.3, 0.3),
+      maturityClass: MaturityClass.mature,
+      confidence: 0.78,
+    );
+    const adjacent = Detection(
+      boundingBox: Rect.fromLTWH(0.35, 0.1, 0.3, 0.3),
+      maturityClass: MaturityClass.immature,
+      confidence: 0.85,
+    );
+    final result = SegmentationPostprocessor.suppressDuplicates(
+      [duplicate, adjacent, strong],
+      boxOf: (d) => d.boundingBox,
+      confidenceOf: (d) => d.confidence,
+      classOf: (d) => d.maturityClass.index,
+      iouThreshold: 0.6,
+      maxDetections: 20,
+    );
+    expect(result, [strong, adjacent]);
+  });
+
   test(
-    'suppresses the same fruit with conflicting stages, keeps adjacent fruits',
+    'keeps overlapping fruits of different stages in live and photo NMS',
     () {
-      const box = Rect.fromLTWH(0.1, 0.1, 0.3, 0.3);
-      const strong = Detection(
-        boundingBox: box,
+      const mature = Detection(
+        boundingBox: Rect.fromLTWH(.1, .1, .3, .3),
         maturityClass: MaturityClass.mature,
-        confidence: 0.95,
+        confidence: .95,
       );
-      const duplicate = Detection(
-        boundingBox: Rect.fromLTWH(0.11, 0.1, 0.3, 0.3),
+      const immature = Detection(
+        boundingBox: Rect.fromLTWH(.17, .1, .3, .3),
         maturityClass: MaturityClass.immature,
-        confidence: 0.78,
+        confidence: .90,
       );
-      const adjacent = Detection(
-        boundingBox: Rect.fromLTWH(0.35, 0.1, 0.3, 0.3),
-        maturityClass: MaturityClass.immature,
-        confidence: 0.85,
+      expect(
+        SegmentationPostprocessor.intersectionOverUnion(
+          mature.boundingBox,
+          immature.boundingBox,
+        ),
+        greaterThan(.6),
       );
-      final result = SegmentationPostprocessor.suppressDuplicates(
-        [duplicate, adjacent, strong],
-        boxOf: (d) => d.boundingBox,
-        confidenceOf: (d) => d.confidence,
-        iouThreshold: 0.6,
-        maxDetections: 20,
-      );
-      expect(result, [strong, adjacent]);
+      for (final limit in [20, 300]) {
+        final kept = SegmentationPostprocessor.suppressDuplicates(
+          [immature, mature],
+          boxOf: (d) => d.boundingBox,
+          confidenceOf: (d) => d.confidence,
+          classOf: (d) => d.maturityClass.index,
+          iouThreshold: .6,
+          maxDetections: limit,
+        );
+        expect(kept, [mature, immature]);
+      }
     },
   );
 

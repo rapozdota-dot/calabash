@@ -188,7 +188,7 @@ class _SplashTypography extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         Text(
-          'POWERED BY COMPUTER VISION',
+          'POWERED BY YOLOv8n-seg',
           textAlign: TextAlign.center,
           maxLines: 1,
           style: textTheme.bodySmall?.copyWith(

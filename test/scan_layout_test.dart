@@ -1,6 +1,5 @@
 import 'package:calabash_maturity_detection/providers/detection_provider.dart';
 import 'package:calabash_maturity_detection/screens/home_screen.dart';
-import 'package:calabash_maturity_detection/screens/camera_screen.dart';
 import 'package:calabash_maturity_detection/services/image_service.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
 import 'package:flutter/material.dart';
@@ -14,7 +13,7 @@ void main() {
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      for (final page in [const HomeScreen(), const CameraScreen()]) {
+      for (final page in [const HomeScreen()]) {
         await tester.pumpWidget(
           ChangeNotifierProvider(
             create: (_) => DetectionProvider(
@@ -35,12 +34,7 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
-        await tester.scrollUntilVisible(
-          find.text(
-            page is HomeScreen ? 'Photo or Gallery' : 'Choose from Gallery',
-          ),
-          150,
-        );
+        await tester.scrollUntilVisible(find.text('Choose from Gallery'), 150);
         expect(tester.takeException(), isNull);
       }
     });

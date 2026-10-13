@@ -7,6 +7,7 @@ import 'dart:ui' as ui;
 import 'package:camera/camera.dart';
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/services/camera_image_converter.dart';
+import 'package:calabash_maturity_detection/services/camera_frame_policy.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/services.dart';
@@ -166,7 +167,10 @@ class LiveInferenceFrame {
             (plane) => LiveInferencePlane(
               bytes: TransferableTypedData.fromList([plane.bytes]),
               bytesPerRow: plane.bytesPerRow,
-              bytesPerPixel: plane.bytesPerPixel ?? 1,
+              bytesPerPixel: CameraFramePolicy.pixelStride(
+                image.format.group,
+                plane.bytesPerPixel,
+              ),
             ),
           )
           .toList(growable: false),
@@ -181,6 +185,36 @@ class LiveInferenceFrame {
   final int rotationDegrees;
   final bool isFrontCamera;
   final List<LiveInferencePlane> planes;
+
+  /// Consume transferred bytes once, in the worker, using the shared converter.
+  img.Image toImage({CameraImageConversionTiming? timing}) {
+    final imageFormat = switch (format) {
+      LiveInferenceImageFormat.yuv420 => ImageFormatGroup.yuv420,
+      LiveInferenceImageFormat.bgra8888 => ImageFormatGroup.bgra8888,
+      LiveInferenceImageFormat.unsupported => throw UnsupportedError(
+        'Unsupported camera image format for live inference worker.',
+      ),
+    };
+    return CameraImageConverter.fromPlanes(
+      width: width,
+      height: height,
+      format: imageFormat,
+      planes: planes
+          .map(
+            (plane) => CameraPixelPlane(
+              bytes: plane.bytes.materialize().asUint8List(),
+              bytesPerRow: plane.bytesPerRow,
+              bytesPerPixel: plane.bytesPerPixel,
+            ),
+          )
+          .toList(growable: false),
+      rotationDegrees: rotationDegrees,
+      lensDirection: isFrontCamera
+          ? CameraLensDirection.front
+          : CameraLensDirection.back,
+      timing: timing,
+    );
+  }
 }
 
 class LiveInferencePlane {
@@ -334,6 +368,66 @@ class LiveInferenceBackendInfo {
       '${selectedConfig.label} (${selectedConfig.threads} thread${selectedConfig.threads == 1 ? '' : 's'})';
 }
 
+class LiveInferenceBackendPolicy {
+  LiveInferenceBackendPolicy._();
+
+  static const androidPreferred = TfliteBackendConfig(
+    kind: TfliteBackendKind.nnapi,
+    label: 'NNAPI',
+    threads: 2,
+  );
+
+  static TfliteBackendConfig? preferredQuickBackend({
+    required bool isAndroid,
+    TfliteBackendConfig? cachedConfig,
+  }) {
+    if (!isAndroid || cachedConfig?.cacheKey == androidPreferred.cacheKey) {
+      return null;
+    }
+    return androidPreferred;
+  }
+
+  static List<TfliteBackendConfig> fallbackBackends({
+    required bool isAndroid,
+    required int processorCount,
+    TfliteBackendConfig? cachedConfig,
+    Set<String> excludedCacheKeys = const {},
+  }) {
+    final highThreadCount = math.max(2, math.min(4, processorCount ~/ 2));
+    final candidates = <TfliteBackendConfig>[
+      TfliteBackendConfig(
+        kind: TfliteBackendKind.xnnpack,
+        label: 'XNNPACK CPU',
+        threads: highThreadCount,
+      ),
+      const TfliteBackendConfig(
+        kind: TfliteBackendKind.xnnpack,
+        label: 'XNNPACK CPU',
+        threads: 2,
+      ),
+      TfliteBackendConfig(
+        kind: TfliteBackendKind.cpu,
+        label: 'CPU',
+        threads: highThreadCount,
+      ),
+      TfliteBackendConfig.cpu2,
+      if (isAndroid)
+        const TfliteBackendConfig(
+          kind: TfliteBackendKind.gpu,
+          label: 'GPU delegate',
+          threads: 1,
+        ),
+    ];
+
+    final seen = <String>{};
+    return candidates
+        .where((config) => config.cacheKey != cachedConfig?.cacheKey)
+        .where((config) => !excludedCacheKeys.contains(config.cacheKey))
+        .where((config) => seen.add(config.cacheKey))
+        .toList(growable: false);
+  }
+}
+
 enum LiveInferenceImageFormat {
   yuv420,
   bgra8888,
@@ -346,18 +440,6 @@ enum LiveInferenceImageFormat {
       _ => LiveInferenceImageFormat.unsupported,
     };
   }
-}
-
-class _MaterializedPlane {
-  const _MaterializedPlane({
-    required this.bytes,
-    required this.bytesPerRow,
-    required this.bytesPerPixel,
-  });
-
-  final Uint8List bytes;
-  final int bytesPerRow;
-  final int bytesPerPixel;
 }
 
 class _LiveInferenceWorkerInit {
@@ -507,9 +589,39 @@ class _LiveInferenceWorkerRuntime {
     }
 
     final attempts = <TfliteBackendBenchmark>[];
+    final preferredConfig = LiveInferenceBackendPolicy.preferredQuickBackend(
+      isAndroid: Platform.isAndroid,
+      cachedConfig: cachedConfig,
+    );
+    if (preferredConfig != null) {
+      final preferredAttempt = await _tryBackend(
+        modelBytes: modelBytes,
+        config: preferredConfig,
+        warmupRuns: 1,
+        measuredRuns: 1,
+      );
+      attempts.add(preferredAttempt.benchmark);
+      if (preferredAttempt.service != null) {
+        _modelService = preferredAttempt.service;
+        _backendInfo = LiveInferenceBackendInfo(
+          selectedConfig: preferredConfig,
+          attempts: attempts,
+          fromCache: false,
+        );
+        return _backendInfo!;
+      }
+    }
+
     _BackendAttempt? bestAttempt;
 
-    for (final config in _candidateBackends(cachedConfig)) {
+    for (final config in LiveInferenceBackendPolicy.fallbackBackends(
+      isAndroid: Platform.isAndroid,
+      processorCount: Platform.numberOfProcessors,
+      cachedConfig: cachedConfig,
+      excludedCacheKeys: {
+        if (preferredConfig != null) preferredConfig.cacheKey,
+      },
+    )) {
       final attempt = await _tryBackend(
         modelBytes: modelBytes,
         config: config,
@@ -569,7 +681,8 @@ class _LiveInferenceWorkerRuntime {
     }
 
     final service = ModelService(
-      modelBuffer: Uint8List.fromList(modelBytes),
+      // Backends only read these weights; avoid a full Dart-side copy per attempt.
+      modelBuffer: modelBytes,
       backendConfig: config,
       confidenceThreshold: AppConstants.liveWeakConfidenceThreshold,
       maxDetections: AppConstants.liveMaxDetections,
@@ -597,51 +710,6 @@ class _LiveInferenceWorkerRuntime {
     }
   }
 
-  List<TfliteBackendConfig> _candidateBackends(
-    TfliteBackendConfig? cachedConfig,
-  ) {
-    final highThreadCount = math.max(
-      2,
-      math.min(4, Platform.numberOfProcessors ~/ 2),
-    );
-    final candidates = <TfliteBackendConfig>[
-      if (Platform.isAndroid)
-        const TfliteBackendConfig(
-          kind: TfliteBackendKind.gpu,
-          label: 'GPU delegate',
-          threads: 1,
-        ),
-      if (Platform.isAndroid)
-        const TfliteBackendConfig(
-          kind: TfliteBackendKind.nnapi,
-          label: 'NNAPI',
-          threads: 2,
-        ),
-      TfliteBackendConfig(
-        kind: TfliteBackendKind.xnnpack,
-        label: 'XNNPACK CPU',
-        threads: highThreadCount,
-      ),
-      const TfliteBackendConfig(
-        kind: TfliteBackendKind.xnnpack,
-        label: 'XNNPACK CPU',
-        threads: 2,
-      ),
-      TfliteBackendConfig(
-        kind: TfliteBackendKind.cpu,
-        label: 'CPU',
-        threads: highThreadCount,
-      ),
-      TfliteBackendConfig.cpu2,
-    ];
-
-    final seen = <String>{};
-    return candidates
-        .where((config) => config.cacheKey != cachedConfig?.cacheKey)
-        .where((config) => seen.add(config.cacheKey))
-        .toList(growable: false);
-  }
-
   Future<LiveInferenceResult> detect(LiveInferenceFrame frame) async {
     final modelService = _modelService;
     final backendInfo = _backendInfo;
@@ -651,7 +719,7 @@ class _LiveInferenceWorkerRuntime {
 
     final workerReceivedAtMicros = DateTime.now().microsecondsSinceEpoch;
     final conversionTiming = CameraImageConversionTiming();
-    final decodedFrame = _toImage(frame, timing: conversionTiming);
+    final decodedFrame = frame.toImage(timing: conversionTiming);
     final modelResult = await modelService.detectFruitsFromImageWithMetrics(
       decodedFrame,
     );
@@ -669,124 +737,6 @@ class _LiveInferenceWorkerRuntime {
           workerReceivedAtMicros - frame.transferStartedAtMicros,
       backendInfo: backendInfo,
     );
-  }
-
-  img.Image _toImage(
-    LiveInferenceFrame frame, {
-    required CameraImageConversionTiming timing,
-  }) {
-    final materializedPlanes = frame.planes
-        .map(
-          (plane) => _MaterializedPlane(
-            bytes: plane.bytes.materialize().asUint8List(),
-            bytesPerRow: plane.bytesPerRow,
-            bytesPerPixel: plane.bytesPerPixel,
-          ),
-        )
-        .toList(growable: false);
-
-    final rgbStopwatch = Stopwatch()..start();
-    final rgbImage = switch (frame.format) {
-      LiveInferenceImageFormat.yuv420 => _fromYuv420(frame, materializedPlanes),
-      LiveInferenceImageFormat.bgra8888 => _fromBgra8888(
-        frame,
-        materializedPlanes,
-      ),
-      LiveInferenceImageFormat.unsupported => throw UnsupportedError(
-        'Unsupported camera image format for live inference worker.',
-      ),
-    };
-    rgbStopwatch.stop();
-    timing.rgbConversionMicros = rgbStopwatch.elapsedMicroseconds;
-
-    final orientationStopwatch = Stopwatch()..start();
-    final normalizedRotation = frame.rotationDegrees % 360;
-    var orientedImage = normalizedRotation == 0
-        ? rgbImage
-        : img.copyRotate(rgbImage, angle: normalizedRotation);
-    if (frame.isFrontCamera) {
-      orientedImage = img.flipHorizontal(orientedImage);
-    }
-    orientationStopwatch.stop();
-    timing.orientationMicros = orientationStopwatch.elapsedMicroseconds;
-
-    return orientedImage;
-  }
-
-  img.Image _fromYuv420(
-    LiveInferenceFrame frame,
-    List<_MaterializedPlane> planes,
-  ) {
-    if (planes.length < 3) {
-      throw StateError('YUV420 frames must include Y, U, and V planes.');
-    }
-
-    final image = img.Image(
-      width: frame.width,
-      height: frame.height,
-      numChannels: 3,
-    );
-    final yPlane = planes[0];
-    final uPlane = planes[1];
-    final vPlane = planes[2];
-
-    final uvRowStride = uPlane.bytesPerRow;
-    final uvPixelStride = uPlane.bytesPerPixel;
-
-    for (var y = 0; y < frame.height; y++) {
-      final yRowOffset = yPlane.bytesPerRow * y;
-      final uvRowOffset = uvRowStride * (y >> 1);
-
-      for (var x = 0; x < frame.width; x++) {
-        final uvOffset = uvRowOffset + ((x >> 1) * uvPixelStride);
-        final yValue = yPlane.bytes[yRowOffset + x].toDouble();
-        final uValue = uPlane.bytes[uvOffset].toDouble() - 128.0;
-        final vValue = vPlane.bytes[uvOffset].toDouble() - 128.0;
-
-        final red = _clampToByte(yValue + (1.402 * vValue));
-        final green = _clampToByte(
-          yValue - (0.344136 * uValue) - (0.714136 * vValue),
-        );
-        final blue = _clampToByte(yValue + (1.772 * uValue));
-
-        image.setPixelRgb(x, y, red, green, blue);
-      }
-    }
-
-    return image;
-  }
-
-  img.Image _fromBgra8888(
-    LiveInferenceFrame frame,
-    List<_MaterializedPlane> planes,
-  ) {
-    if (planes.isEmpty) {
-      throw StateError('BGRA frames must include one image plane.');
-    }
-
-    final plane = planes.first;
-    final image = img.Image(
-      width: frame.width,
-      height: frame.height,
-      numChannels: 3,
-    );
-
-    for (var y = 0; y < frame.height; y++) {
-      final rowOffset = y * plane.bytesPerRow;
-      for (var x = 0; x < frame.width; x++) {
-        final pixelOffset = rowOffset + (x * plane.bytesPerPixel);
-        final blue = plane.bytes[pixelOffset];
-        final green = plane.bytes[pixelOffset + 1];
-        final red = plane.bytes[pixelOffset + 2];
-        image.setPixelRgb(x, y, red, green, blue);
-      }
-    }
-
-    return image;
-  }
-
-  int _clampToByte(double value) {
-    return math.max(0, math.min(255, value.round()));
   }
 
   void dispose() {
