@@ -328,8 +328,7 @@ class ModelService {
       final prototypes = _protoLayout == ImageTensorLayout.channelsFirst
           ? workspace.protoOutputBuffer
           : workspace.protoChannelFirstBuffer;
-      if (nmsCandidates.isNotEmpty &&
-          _protoLayout != ImageTensorLayout.channelsFirst) {
+      if (_protoLayout != ImageTensorLayout.channelsFirst) {
         _copyProtoTensor(
           rawProto: workspace.protoOutputBuffer,
           channelFirstProto: workspace.protoChannelFirstBuffer,
@@ -504,7 +503,12 @@ class ModelService {
       rawOutputs: rawOutputs,
       detectionOutputBuffer: detectionOutputBuffer,
       protoOutputBuffer: protoOutputBuffer,
-      protoChannelFirstBuffer: Float32List(_maskChannelCount * _protoPlaneSize),
+      // NCHW exports already have contiguous prototype planes.
+      protoChannelFirstBuffer: Float32List(
+        _protoLayout == ImageTensorLayout.channelsLast
+            ? _maskChannelCount * _protoPlaneSize
+            : 0,
+      ),
       maskLogitsBuffer: Float32List(_protoPlaneSize),
     );
   }

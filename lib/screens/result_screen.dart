@@ -1,12 +1,9 @@
-import 'dart:io';
-import 'dart:ui' as ui;
-
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/providers/detection_provider.dart';
 import 'package:calabash_maturity_detection/screens/live_camera_screen.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:calabash_maturity_detection/utils/navigation.dart';
-import 'package:calabash_maturity_detection/widgets/detection_box.dart';
+import 'package:calabash_maturity_detection/widgets/detection_image.dart';
 import 'package:calabash_maturity_detection/widgets/result_card.dart';
 import 'package:calabash_maturity_detection/widgets/summary_card.dart';
 import 'package:flutter/material.dart';
@@ -38,10 +35,7 @@ class ResultScreen extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _imageWithOverlays(
-                    imageFile: imageFile,
-                    detections: detections,
-                  ),
+                  DetectionImage(imageFile: imageFile, detections: detections),
                   if (provider.errorMessage != null && !provider.isBusy) ...[
                     const SizedBox(height: AppConstants.sectionSpacing),
                     _messageBanner(context, provider.errorMessage!),
@@ -207,7 +201,7 @@ class ResultScreen extends StatelessWidget {
             ),
             const SizedBox(height: AppConstants.smallSpacing),
             Text(
-              isBusy ? 'Analyzing image...' : 'No calabash detected',
+              isBusy ? 'Analyzing image...' : 'No calabash fruits detected',
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
@@ -377,91 +371,5 @@ class ResultScreen extends StatelessWidget {
 
   Future<void> _tryAnotherImage(DetectionProvider provider) async {
     await provider.scanFromSource(ImageSource.gallery);
-  }
-
-  Widget _imageWithOverlays({
-    required File imageFile,
-    required List<Detection> detections,
-  }) {
-    return FutureBuilder<ui.Image>(
-      future: _decodeImage(imageFile),
-      builder: (context, snapshot) {
-        final image = snapshot.data;
-        final aspectRatio = image == null
-            ? 1.0
-            : (image.width / image.height).clamp(0.72, 1.45).toDouble();
-
-        return Card(
-          clipBehavior: Clip.antiAlias,
-          child: AspectRatio(
-            aspectRatio: aspectRatio,
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final frameRect = _computeImageRect(
-                  image: image,
-                  containerSize: Size(
-                    constraints.maxWidth,
-                    constraints.maxHeight,
-                  ),
-                );
-
-                return Stack(
-                  children: [
-                    Positioned.fill(
-                      child: ColoredBox(
-                        color: Colors.black.withValues(alpha: 0.88),
-                      ),
-                    ),
-                    Positioned.fromRect(
-                      rect: frameRect,
-                      child: snapshot.hasData
-                          ? Image.file(imageFile, fit: BoxFit.fill)
-                          : const ColoredBox(
-                              color: Colors.black12,
-                              child: Center(child: CircularProgressIndicator()),
-                            ),
-                    ),
-                    ...detections.asMap().entries.map(
-                      (entry) => DetectionBox(
-                        detection: entry.value,
-                        fruitNumber: entry.key + 1,
-                        imageWidth: frameRect.width,
-                        imageHeight: frameRect.height,
-                        offsetX: frameRect.left,
-                        offsetY: frameRect.top,
-                      ),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<ui.Image> _decodeImage(File file) async {
-    final bytes = await file.readAsBytes();
-    return decodeImageFromList(bytes);
-  }
-
-  Rect _computeImageRect({
-    required ui.Image? image,
-    required Size containerSize,
-  }) {
-    if (image == null) {
-      return Offset.zero & containerSize;
-    }
-
-    final fitted = applyBoxFit(
-      BoxFit.contain,
-      Size(image.width.toDouble(), image.height.toDouble()),
-      containerSize,
-    );
-    return Alignment.center.inscribe(
-      fitted.destination,
-      Offset.zero & containerSize,
-    );
   }
 }

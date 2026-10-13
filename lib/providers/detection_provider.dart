@@ -18,6 +18,7 @@ class DetectionProvider extends ChangeNotifier {
 
   bool _isInitializing = false;
   bool _isAnalyzing = false;
+  bool _isPickingImage = false;
   bool _didInitialize = false;
 
   String? _errorMessage;
@@ -28,7 +29,7 @@ class DetectionProvider extends ChangeNotifier {
 
   bool get isInitializing => _isInitializing;
   bool get isAnalyzing => _isAnalyzing;
-  bool get isBusy => _isInitializing || _isAnalyzing;
+  bool get isBusy => _isInitializing || _isAnalyzing || _isPickingImage;
 
   String? get errorMessage => _errorMessage;
   String get recommendation => _recommendation;
@@ -68,12 +69,21 @@ class DetectionProvider extends ChangeNotifier {
   }
 
   Future<bool> scanFromSource(ImageSource source) async {
+    if (isBusy) return false;
     _errorMessage = null;
+    _isPickingImage = true;
     notifyListeners();
 
-    final pickedImage = await _imageService.pickImage(source: source);
+    File? pickedImage;
+    try {
+      pickedImage = await _imageService.pickImage(source: source);
+    } catch (error) {
+      _errorMessage = 'Unable to open the image picker. Please try again.';
+      debugPrint('Image selection failed: $error');
+    }
+    _isPickingImage = false;
     if (pickedImage == null) {
-      _errorMessage = 'No image selected.';
+      // Cancellation is a normal action; keep any existing result intact.
       notifyListeners();
       return false;
     }
@@ -82,21 +92,15 @@ class DetectionProvider extends ChangeNotifier {
   }
 
   Future<bool> scanFile(File imageFile) async {
-    if (_isAnalyzing) {
-      _errorMessage = 'Another image is already being analyzed.';
-      notifyListeners();
-      return false;
-    }
+    if (isBusy) return false;
 
     _selectedImage = imageFile;
     _detections = [];
-    _errorMessage = null;
-    notifyListeners();
-
     return analyzeSelectedImage();
   }
 
   Future<bool> analyzeSelectedImage() async {
+    if (isBusy) return false;
     if (_selectedImage == null) {
       _errorMessage = 'Please capture or choose an image first.';
       notifyListeners();
@@ -104,11 +108,12 @@ class DetectionProvider extends ChangeNotifier {
     }
 
     _isAnalyzing = true;
+    final image = _selectedImage!;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      _detections = await _modelService.detectFruits(_selectedImage!);
+      _detections = await _modelService.detectFruits(image);
       // Recommendation logic is intentionally simple and explainable for field use.
       _recommendation = _buildRecommendation(
         mature: matureCount,

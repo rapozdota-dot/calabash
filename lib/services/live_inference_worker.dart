@@ -591,7 +591,8 @@ class _LiveInferenceWorkerRuntime {
     }
 
     final service = ModelService(
-      modelBuffer: Uint8List.fromList(modelBytes),
+      // Backends only read these weights; avoid a full Dart-side copy per attempt.
+      modelBuffer: modelBytes,
       backendConfig: config,
       confidenceThreshold: AppConstants.liveWeakConfidenceThreshold,
       maxDetections: AppConstants.liveMaxDetections,

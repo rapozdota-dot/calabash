@@ -45,6 +45,13 @@ pixels and 1% of the candidate crop, followed by validation after smoothing.
 
 ## Run Locally
 
+The home screen has two direct actions: **Scan Calabash** opens the live camera
+with its capture button, and **Choose from Gallery** opens the image picker and
+then the result. There is no intermediate scan-options page. Cancelling the
+picker keeps the current screen/result intact; repeated scans are blocked while
+picking or analyzing. Result images share Flutter's image cache for dimensions
+and rendering, so changing overlays does not decode the image again.
+
 ```bash
 flutter pub get
 flutter run
