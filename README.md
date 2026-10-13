@@ -154,7 +154,8 @@ GitHub Actions workflow instead of a local iOS build:
 .github/workflows/build-ios.yml
 ```
 
-The workflow is started manually with `workflow_dispatch`. It pins Flutter
+The workflow runs on pushes to `main` or `master`, and can also be started
+manually with `workflow_dispatch`. It pins Flutter
 `3.38.7`, runs analysis and tests, installs CocoaPods dependencies during the
 iOS build, and runs `flutter build ios --release --no-codesign`. It packages
 `Payload/Runner.app` into `dist/Calabash-unsigned.ipa` and uploads that IPA as a
@@ -204,7 +205,7 @@ The Android workflow analyzes the project, runs tests, builds the APK, uploads a
 downloadable APK artifact, and publishes a named GitHub Release on pushes to
 `main` or `master`. Manual runs can disable publication with `publish_release=false`.
 
-Start the iOS unsigned IPA workflow manually from the desired branch:
+Every push to `main` or `master` also runs the iOS unsigned IPA workflow:
 
 ```text
 .github/workflows/build-ios.yml
