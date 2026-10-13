@@ -16,6 +16,7 @@ class ResultScreen extends StatelessWidget {
   // Live capture keeps its camera route underneath and resumes it after pop.
   final bool returnToLiveCamera;
 
+  /// Observes the photo result and shows its image, masks, guidance, and retry actions.
   @override
   Widget build(BuildContext context) {
     return Consumer<DetectionProvider>(
@@ -51,6 +52,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Provides a safe recovery screen when no photo is selected.
   Scaffold _noImageScaffold(BuildContext context, DetectionProvider provider) {
     return Scaffold(
       appBar: AppBar(title: const Text('Detection Result')),
@@ -82,6 +84,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Chooses zero-, single-, or multiple-fruit content to avoid redundant result cards.
   List<Widget> _resultSections(
     BuildContext context,
     DetectionProvider provider,
@@ -115,6 +118,7 @@ class ResultScreen extends StatelessWidget {
     ];
   }
 
+  /// Displays an analysis error separately from successful detection information.
   Widget _messageBanner(BuildContext context, String message) {
     return Container(
       padding: const EdgeInsets.all(12),
@@ -144,6 +148,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Emphasizes one fruit's maturity and confidence without an unnecessary count summary.
   Widget _singleDetectionResult(BuildContext context, Detection detection) {
     final color = detection.maturityClass.color;
     final confidence = (detection.confidence * 100).toStringAsFixed(0);
@@ -183,6 +188,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Distinguishes active analysis from a completed scan with no calabash detections.
   Widget _zeroDetectionState(BuildContext context, DetectionProvider provider) {
     final isBusy = provider.isBusy;
 
@@ -240,6 +246,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Presents harvest advice as suggested guidance, not a guaranteed decision.
   Widget _recommendationCard(BuildContext context, String recommendation) {
     return Card(
       color: AppConstants.secondaryLightGreen.withValues(alpha: 0.24),
@@ -279,6 +286,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Selects cautious harvest wording for the detected maturity stage.
   String _guidanceForSingleDetection(Detection detection) {
     switch (detection.maturityClass) {
       case MaturityClass.immature:
@@ -292,6 +300,7 @@ class ResultScreen extends StatelessWidget {
     }
   }
 
+  /// Summarizes all present stages rather than hiding minority results behind a majority.
   String _guidanceForMultipleDetections(DetectionProvider provider) {
     final detectedClasses = provider.detections
         .map((detection) => detection.maturityClass)
@@ -312,10 +321,12 @@ class ResultScreen extends StatelessWidget {
     return '${guidanceParts.join('. ')}. Review the individual results below.';
   }
 
+  /// Formats singular/plural fruit counts in guidance text.
   String _fruitCount(int count) {
     return '$count ${count == 1 ? 'fruit' : 'fruits'}';
   }
 
+  /// Uses plural harvest guidance when every detected fruit has the same maturity stage.
   String _guidanceForUniformMultipleDetections(MaturityClass maturityClass) {
     switch (maturityClass) {
       case MaturityClass.immature:
@@ -329,6 +340,7 @@ class ResultScreen extends StatelessWidget {
     }
   }
 
+  /// Builds numbered per-fruit result cards for a multiple-detection photo.
   Widget _detectedList(BuildContext context, List<Detection> detections) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -351,6 +363,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Provides a direct camera retry action after viewing detections.
   Widget _scanAgainButton(BuildContext context, DetectionProvider provider) {
     return OutlinedButton.icon(
       onPressed: () => _startNewScan(context, provider),
@@ -359,6 +372,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Returns to the existing live camera when possible, otherwise opens one, and clears the photo.
   void _startNewScan(BuildContext context, DetectionProvider provider) {
     final navigator = Navigator.of(context);
     if (returnToLiveCamera && navigator.canPop()) {
@@ -369,6 +383,7 @@ class ResultScreen extends StatelessWidget {
     provider.clearCurrentResult();
   }
 
+  /// Runs the gallery picker again while staying on the current result route.
   Future<void> _tryAnotherImage(DetectionProvider provider) async {
     await provider.scanFromSource(ImageSource.gallery);
   }

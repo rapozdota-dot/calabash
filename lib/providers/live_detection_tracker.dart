@@ -47,8 +47,11 @@ class LiveDetectionTracker {
   final List<_StableDetectionTrack> _tracks = [];
   int _nextTrackId = 1;
 
+  /// Counts tracked candidates, including ones not yet confirmed for display.
   int get activeTrackCount => _tracks.length;
 
+  /// Matches current detections to prior tracks and confirms repeated observations.
+  /// Requires valid classes, confidence, and nonempty masks; missing tracks are removed immediately.
   LiveDetectionUpdate update(List<Detection> detections) {
     detections = detections
         .where(
@@ -150,12 +153,14 @@ class LiveDetectionTracker {
     );
   }
 
+  /// Discards all tracks and reports whether any were present.
   bool clear() {
     final hadTracks = _tracks.isNotEmpty;
     _tracks.clear();
     return hadTracks;
   }
 
+  /// Finds an unused prior track using overlap, center distance, and compatible area.
   _TrackMatch? _findBestTrackMatch(
     Detection detection,
     List<_StableDetectionTrack> tracks,
@@ -213,6 +218,7 @@ class LiveDetectionTracker {
     return bestMatch;
   }
 
+  /// Allows interpolation only for small movements, avoiding sliding masks across large jumps.
   bool _shouldAnimateBounds({
     required Rect previous,
     required Rect next,
@@ -226,6 +232,7 @@ class LiveDetectionTracker {
         heightDelta <= AppConstants.liveOverlayAnimationMaxSizeDelta;
   }
 
+  /// Checks stricter motion/size limits used to declare a capture-ready view.
   bool _isReadyStableMotion({
     required Rect previous,
     required Rect next,
@@ -238,11 +245,13 @@ class LiveDetectionTracker {
         heightDelta <= AppConstants.liveReadySizeDeltaThreshold;
   }
 
+  /// Measures relative size change using a nonzero baseline for tiny boxes.
   double _sizeDeltaRatio(double previous, double next) {
     final baseline = math.max(previous.abs(), 0.0001);
     return (next - previous).abs() / baseline;
   }
 
+  /// Groups confidence into normal, weak, or low for cautious live labels.
   LiveConfidenceTier _confidenceTierFor(double confidence) {
     if (confidence >= AppConstants.liveHighConfidenceThreshold) {
       return LiveConfidenceTier.normal;
@@ -253,6 +262,7 @@ class LiveDetectionTracker {
     return LiveConfidenceTier.low;
   }
 
+  /// Requires visible confirmed tracks, normal confidence, and stable motion for readiness.
   LiveStabilityStatus _stabilityStatusFor(
     List<LiveDetection> liveDetections,
     List<_StableDetectionTrack> tracks,
@@ -278,6 +288,7 @@ class LiveDetectionTracker {
         : LiveStabilityStatus.holdSteady;
   }
 
+  /// Measures box overlap relative to their combined area for track matching.
   double _iou(Rect a, Rect b) {
     final left = math.max(a.left, b.left);
     final top = math.max(a.top, b.top);
@@ -298,6 +309,7 @@ class LiveDetectionTracker {
     return intersection / union;
   }
 
+  /// Measures distance between box centers in normalized image coordinates.
   double _centerDistance(Rect a, Rect b) {
     final dx = a.center.dx - b.center.dx;
     final dy = a.center.dy - b.center.dy;
@@ -326,6 +338,7 @@ class _StableDetectionTrack {
     required this.stableMotionFrameCount,
   });
 
+  /// Starts an unconfirmed track from one observation; later frames establish stability.
   factory _StableDetectionTrack.fromDetection({
     required int id,
     required Detection detection,
@@ -352,6 +365,8 @@ class _StableDetectionTrack {
   MaturityClass? pendingClass;
   int pendingCount = 0;
 
+  /// Updates motion/confidence and requires repeated evidence before switching a stage.
+  /// Weak conflicting predictions cannot overwrite a confirmed maturity label.
   void updateWith(
     Detection detection, {
     required bool isStableMotion,

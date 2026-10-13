@@ -18,6 +18,7 @@ class DetectionImage extends StatefulWidget {
   final List<Detection> detections;
   final ImageProvider? imageProvider;
 
+  /// Creates state that retains the resolved image while detection overlays update.
   @override
   State<DetectionImage> createState() => _DetectionImageState();
 }
@@ -28,12 +29,14 @@ class _DetectionImageState extends State<DetectionImage> {
   bool _failed = false;
   late final _listener = ImageStreamListener(_onImage, onError: _onError);
 
+  /// Resolves the image using current Flutter image-cache and display configuration.
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _resolveImage();
   }
 
+  /// Reloads only when the file/provider changes, not when new detections arrive.
   @override
   void didUpdateWidget(covariant DetectionImage oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -43,6 +46,7 @@ class _DetectionImageState extends State<DetectionImage> {
     }
   }
 
+  /// Subscribes to a cached image stream and replaces listeners only for a different image.
   void _resolveImage() {
     final provider = widget.imageProvider ?? FileImage(widget.imageFile);
     final stream = provider.resolve(createLocalImageConfiguration(context));
@@ -54,6 +58,7 @@ class _DetectionImageState extends State<DetectionImage> {
     stream.addListener(_listener);
   }
 
+  /// Replaces the retained image and disposes its predecessor after rendering completes.
   void _replaceImage(ImageInfo? info) {
     final old = _info;
     _info = info;
@@ -61,6 +66,7 @@ class _DetectionImageState extends State<DetectionImage> {
     SchedulerBinding.instance.addPostFrameCallback((_) => old?.dispose());
   }
 
+  /// Stores a decoded frame for both dimensions and rendering, releasing it if unmounted.
   void _onImage(ImageInfo info, bool synchronousCall) {
     if (!mounted) {
       info.dispose();
@@ -72,6 +78,7 @@ class _DetectionImageState extends State<DetectionImage> {
     });
   }
 
+  /// Clears an unusable image and switches the widget to its friendly error state.
   void _onError(Object error, StackTrace? stack) {
     if (mounted) {
       setState(() {
@@ -81,6 +88,7 @@ class _DetectionImageState extends State<DetectionImage> {
     }
   }
 
+  /// Detaches the image listener and safely releases the retained native image reference.
   @override
   void dispose() {
     _stream?.removeListener(_listener);
@@ -88,6 +96,7 @@ class _DetectionImageState extends State<DetectionImage> {
     super.dispose();
   }
 
+  /// Contains the cached image and maps normalized masks into the identical fitted rectangle.
   @override
   Widget build(BuildContext context) {
     final image = _info?.image;

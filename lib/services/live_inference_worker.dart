@@ -13,6 +13,7 @@ import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 
+/// Runs live RGB conversion and model inference outside Flutter's UI isolate.
 class LiveInferenceWorker {
   static TfliteBackendConfig? _cachedBackendConfig;
 
@@ -27,8 +28,11 @@ class LiveInferenceWorker {
 
   LiveInferenceBackendInfo? backendInfo;
 
+  /// Reports whether the isolate has initialized its model and can accept requests.
   bool get isReady => _workerPort != null && !_isDisposed;
 
+  /// Loads asset bytes, transfers them to an isolate, and waits for its ready/error reply.
+  /// Request IDs and completers associate asynchronous worker responses with their callers.
   Future<void> start() async {
     if (isReady) {
       return;
@@ -88,6 +92,7 @@ class LiveInferenceWorker {
     await readyCompleter.future;
   }
 
+  /// Sends one transferred frame to the worker and returns the matching result future.
   Future<LiveInferenceResult> detect(LiveInferenceFrame frame) {
     final sendPort = _workerPort;
     if (_isDisposed || sendPort == null) {
@@ -101,6 +106,7 @@ class LiveInferenceWorker {
     return completer.future;
   }
 
+  /// Requests native model cleanup, stops the isolate, and fails unresolved requests.
   Future<void> dispose() async {
     if (_isDisposed) {
       return;
@@ -147,6 +153,8 @@ class LiveInferenceFrame {
     required this.planes,
   });
 
+  /// Packages native pixel planes and their strides for one-way isolate transfer.
+  /// Transferable bytes are materialized once by the worker, not reread by the UI.
   factory LiveInferenceFrame.fromCameraImage({
     required int frameId,
     required CameraImage image,
@@ -250,6 +258,7 @@ class LiveInferenceResult {
   final int frameTransferMicros;
   final LiveInferenceBackendInfo backendInfo;
 
+  /// Recreates UI-facing detections from the worker's transport-safe result values.
   List<Detection> toDetections() {
     return detections
         .map((detection) => detection.toDetection())
@@ -268,6 +277,7 @@ class LiveInferenceDetection {
     this.mask,
   });
 
+  /// Converts UI types to numeric fields for transport, preserving class order.
   factory LiveInferenceDetection.fromDetection(Detection detection) {
     final box = detection.boundingBox;
     final maturityClass = detection.maturityClass;
@@ -297,6 +307,7 @@ class LiveInferenceDetection {
   final double confidence;
   final LiveInferenceMask? mask;
 
+  /// Restores normalized geometry and the fixed three-stage mapping; invalid IDs become Unknown.
   Detection toDetection() {
     return Detection(
       boundingBox: ui.Rect.fromLTWH(left, top, width, height),
@@ -323,6 +334,7 @@ class LiveInferenceMask {
     required this.pixels,
   });
 
+  /// Packages normalized mask placement and its binary pixel grid for transport.
   factory LiveInferenceMask.fromMask(SegmentationMask mask) {
     return LiveInferenceMask(
       left: mask.bounds.left,
@@ -343,6 +355,7 @@ class LiveInferenceMask {
   final int maskHeight;
   final Uint8List pixels;
 
+  /// Restores normalized mask bounds and the compact binary grid used by the painter.
   SegmentationMask toMask() {
     return SegmentationMask(
       bounds: ui.Rect.fromLTWH(left, top, width, height),
@@ -364,6 +377,7 @@ class LiveInferenceBackendInfo {
   final List<TfliteBackendBenchmark> attempts;
   final bool fromCache;
 
+  /// Formats the selected delegate and thread count for performance diagnostics.
   String get label =>
       '${selectedConfig.label} (${selectedConfig.threads} thread${selectedConfig.threads == 1 ? '' : 's'})';
 }
@@ -373,6 +387,7 @@ enum LiveInferenceImageFormat {
   bgra8888,
   unsupported;
 
+  /// Translates supported native formats into worker values and marks all others unsupported.
   static LiveInferenceImageFormat fromCameraFormat(ImageFormatGroup format) {
     return switch (format) {
       ImageFormatGroup.yuv420 => LiveInferenceImageFormat.yuv420,
@@ -448,6 +463,8 @@ class _LiveInferenceWorkerDisposed {
   const _LiveInferenceWorkerDisposed();
 }
 
+/// Owns the worker command loop: initialize once, infer serially, and reply or dispose.
+/// Pixel conversion and model processing run here rather than blocking the live UI isolate.
 Future<void> _liveInferenceWorkerMain(_LiveInferenceWorkerInit init) async {
   final commandPort = ReceivePort();
   final runtime = _LiveInferenceWorkerRuntime();
@@ -505,6 +522,8 @@ class _LiveInferenceWorkerRuntime {
   ModelService? _modelService;
   LiveInferenceBackendInfo? _backendInfo;
 
+  /// Tries a cached backend first, otherwise benchmarks compatible backends.
+  /// Retains the fastest successful interpreter and disposes unsuccessful/slower alternatives.
   Future<LiveInferenceBackendInfo> initialize({
     required Uint8List modelBytes,
     required TfliteBackendConfig? cachedBackendConfig,
@@ -570,6 +589,7 @@ class _LiveInferenceWorkerRuntime {
     return _backendInfo!;
   }
 
+  /// Loads and benchmarks one delegate configuration without aborting other attempts on failure.
   Future<_BackendAttempt> _tryBackend({
     required Uint8List modelBytes,
     required TfliteBackendConfig config,
@@ -620,6 +640,7 @@ class _LiveInferenceWorkerRuntime {
     }
   }
 
+  /// Lists platform-compatible delegates and CPU thread counts, removing duplicate configurations.
   List<TfliteBackendConfig> _candidateBackends(
     TfliteBackendConfig? cachedConfig,
   ) {
@@ -665,6 +686,7 @@ class _LiveInferenceWorkerRuntime {
         .toList(growable: false);
   }
 
+  /// Converts and orients the transferred frame, runs the shared model pipeline, and packages timings.
   Future<LiveInferenceResult> detect(LiveInferenceFrame frame) async {
     final modelService = _modelService;
     final backendInfo = _backendInfo;
@@ -694,6 +716,7 @@ class _LiveInferenceWorkerRuntime {
     );
   }
 
+  /// Releases the worker-owned interpreter and delegate resources.
   void dispose() {
     _modelService?.dispose();
     _modelService = null;

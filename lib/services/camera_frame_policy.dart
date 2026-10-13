@@ -5,11 +5,13 @@ import 'package:flutter/services.dart';
 class CameraFramePolicy {
   CameraFramePolicy._();
 
+  /// Requests BGRA buffers on iOS and YUV buffers on Android to match native formats.
   static ImageFormatGroup imageFormat(TargetPlatform platform) =>
       platform == TargetPlatform.iOS
       ? ImageFormatGroup.bgra8888
       : ImageFormatGroup.yuv420;
 
+  /// Computes Android sensor/device rotation; iOS stream buffers are already oriented.
   static int rotationDegrees({
     required TargetPlatform platform,
     required CameraDescription camera,

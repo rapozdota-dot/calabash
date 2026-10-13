@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
+/// Starts Flutter and mounts the app; model initialization begins in its provider.
 void main() {
   runApp(const CalabashApp());
 }
@@ -17,6 +18,7 @@ void main() {
 class CalabashApp extends StatelessWidget {
   const CalabashApp({super.key});
 
+  /// Creates the shared photo detector and applies the app theme and startup gate.
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
@@ -33,6 +35,7 @@ class CalabashApp extends StatelessWidget {
     );
   }
 
+  /// Defines readable typography, agricultural colors, and consistent controls.
   ThemeData _buildTheme() {
     final base = ThemeData(
       useMaterial3: true,
@@ -99,6 +102,7 @@ class _StartupGate extends StatelessWidget {
   static const _minimumSplashDuration = Duration(milliseconds: 1700);
   static const _transitionDuration = Duration(milliseconds: 300);
 
+  /// Observes model initialization so Home appears only after the loading splash.
   @override
   Widget build(BuildContext context) {
     final isInitializing = context.select<DetectionProvider, bool>(
@@ -133,6 +137,7 @@ class StartupSplashGate extends StatefulWidget {
   final Duration minimumSplashDuration;
   final Duration transitionDuration;
 
+  /// Creates the state that owns the minimum splash-duration timer.
   @override
   State<StartupSplashGate> createState() => _StartupSplashGateState();
 }
@@ -141,6 +146,7 @@ class _StartupSplashGateState extends State<StartupSplashGate> {
   Timer? _minimumSplashTimer;
   bool _minimumSplashElapsed = false;
 
+  /// Starts the minimum display timer without delaying model initialization.
   @override
   void initState() {
     super.initState();
@@ -155,12 +161,14 @@ class _StartupSplashGateState extends State<StartupSplashGate> {
     });
   }
 
+  /// Cancels the startup timer so it cannot update an unmounted screen.
   @override
   void dispose() {
     _minimumSplashTimer?.cancel();
     super.dispose();
   }
 
+  /// Crossfades to Home when both the minimum time and model initialization finish.
   @override
   Widget build(BuildContext context) {
     final shouldShowSplash = widget.isInitializing || !_minimumSplashElapsed;

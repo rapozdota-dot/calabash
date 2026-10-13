@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 
+/// Final fruit predictions plus timings for one complete model pipeline run.
 class ModelDetectionResult {
   const ModelDetectionResult({required this.detections, required this.timings});
 
@@ -17,6 +18,7 @@ class ModelDetectionResult {
   final ModelPipelineTimings timings;
 }
 
+/// Stage durations in microseconds, used to locate mobile performance bottlenecks.
 class ModelPipelineTimings {
   const ModelPipelineTimings({
     required this.preprocessMicros,
@@ -56,8 +58,10 @@ class TfliteBackendConfig {
   final String label;
   final int threads;
 
+  /// Identifies a delegate/thread combination for cached selection and deduplication.
   String get cacheKey => '${kind.name}:$threads';
 
+  /// Restricts this package's GPU/NNAPI options to supported Android execution paths.
   bool get isAndroidOnly =>
       kind == TfliteBackendKind.gpu || kind == TfliteBackendKind.nnapi;
 
@@ -88,6 +92,12 @@ class TfliteBackendBenchmark {
   final String? errorMessage;
 }
 
+/// Offline inference for the bundled three-class YOLOv8n segmentation export.
+///
+/// YOLO currently performs localization, maturity classification, and mask
+/// prediction together. MobileNetV3 classification is not integrated yet.
+/// Tensor layouts come from the interpreter, not from a hardcoded NHWC assumption.
+/// One instance owns mutable reusable buffers and must process scans serially.
 class ModelService {
   static const int _classCount = 3;
   static const int _maskChannelCount = 32;
@@ -133,10 +143,17 @@ class ModelService {
   int? _protoOutputIndex;
   _ModelTensorWorkspace? _tensorWorkspace;
 
+  /// Reports interpreter availability; callers must still await loadModel for completed validation.
   bool get isModelReady => _interpreter != null;
+
+  /// Exposes the selected delegate and thread settings for diagnostics.
   TfliteBackendConfig get backendConfig => _backendConfig;
+
+  /// Enables detailed tensor/candidate logs only in debug builds when explicitly switched on.
   bool get _shouldVerboseLog => kDebugMode && _enableVerboseModelLogs;
 
+  /// Shares one initialization future between concurrent callers.
+  /// Repeated scans reuse the validated interpreter instead of loading weights each time.
   Future<void> loadModel() {
     // Concurrent callers must wait for validation, not skip initialization.
     final pending = _modelLoading;
@@ -147,6 +164,8 @@ class ModelService {
     return loading;
   }
 
+  /// Creates the runtime, validates shapes/dtypes, and logs the tensor signature.
+  /// Any failure frees partially initialized native resources and is rethrown to the caller.
   Future<void> _loadModel() async {
     try {
       final runtime = await _createInterpreter();
@@ -165,6 +184,8 @@ class ModelService {
     }
   }
 
+  /// Creates a TFLite interpreter from bundled assets or transferred model bytes.
+  /// Sets thread/delegate options and releases native option objects on success or failure.
   Future<_InterpreterRuntime> _createInterpreter() async {
     final options = InterpreterOptions()..threads = _backendConfig.threads;
     Delegate? delegate;
@@ -187,6 +208,8 @@ class ModelService {
     }
   }
 
+  /// Attaches the requested GPU/XNNPACK delegate or enables NNAPI; plain CPU needs none.
+  /// Delegates accelerate execution, not change preprocessing or class interpretation.
   Delegate? _createDelegateFor(
     TfliteBackendConfig config,
     InterpreterOptions options,
@@ -212,6 +235,8 @@ class ModelService {
     }
   }
 
+  /// Warms up and times interpreter execution with neutral input for backend selection.
+  /// These timings exclude image conversion, preprocessing, and mask reconstruction.
   Future<TfliteBackendBenchmark> benchmarkInference({
     int warmupRuns = 1,
     int measuredRuns = 2,
@@ -246,16 +271,20 @@ class ModelService {
     );
   }
 
+  /// Decodes a picked/captured photo and runs the same segmentation pipeline used for frames.
   Future<List<Detection>> detectFruits(File imageFile) async {
     final decodedImage = await _decodeImageFile(imageFile);
     return detectFruitsFromImage(decodedImage);
   }
 
+  /// Runs inference on an already decoded RGB image and returns final detections only.
   Future<List<Detection>> detectFruitsFromImage(img.Image image) async {
     final result = await detectFruitsFromImageWithMetrics(image);
     return result.detections;
   }
 
+  /// Awaits validated model loading, checks output availability, and returns detections plus stage timings.
+  /// This async method does not itself create an isolate; the live worker provides that isolation.
   Future<ModelDetectionResult> detectFruitsFromImageWithMetrics(
     img.Image image,
   ) async {
@@ -278,6 +307,8 @@ class ModelService {
     }
   }
 
+  /// Reads and decodes the photo, then bakes EXIF orientation into its pixels.
+  /// Correct orientation is needed before resizing and mapping overlays back to the photo.
   Future<img.Image> _decodeImageFile(File imageFile) async {
     final imageBytes = await imageFile.readAsBytes();
     final decodedImage = img.decodeImage(imageBytes);
@@ -287,6 +318,8 @@ class ModelService {
     return img.bakeOrientation(decodedImage);
   }
 
+  /// Orchestrates letterbox -> TFLite -> candidates -> class-aware NMS -> masks -> UI detections.
+  /// Only surviving candidates reconstruct masks, avoiding expensive work for all 8400 anchors.
   ModelDetectionResult _detectFruitsFromDecodedImage(img.Image decodedImage) {
     final timings = _MutableModelPipelineTimings();
     final totalStopwatch = Stopwatch()..start();
@@ -374,6 +407,9 @@ class ModelService {
     );
   }
 
+  /// Fits the image proportionally inside 640x640 without stretching its fruit shapes.
+  /// Centers the resized image in RGB-114 padding, writes normalized float32 RGB, and saves
+  /// scale/padding metadata so both boxes and masks can be remapped to the original image.
   _PreprocessedImage _preprocessImage(
     img.Image decodedImage, {
     required _ModelTensorWorkspace workspace,
@@ -444,6 +480,8 @@ class ModelService {
     );
   }
 
+  /// Executes the interpreter with reusable input/output byte buffers and times only that call.
+  /// Both segmentation outputs are collected: detection channels and mask prototypes.
   int _runInference(_ModelTensorWorkspace workspace) {
     final stopwatch = Stopwatch()..start();
     _interpreter!.runForMultipleInputs([
@@ -453,6 +491,7 @@ class ModelService {
     return stopwatch.elapsedMicroseconds;
   }
 
+  /// Allocates tensor buffers once per interpreter and reuses them across scans/frames.
   _ModelTensorWorkspace _ensureTensorWorkspace() {
     final existingWorkspace = _tensorWorkspace;
     if (existingWorkspace != null) {
@@ -464,6 +503,8 @@ class ModelService {
     return workspace;
   }
 
+  /// Allocates float32 buffers using the interpreter's validated tensor shapes.
+  /// A prototype-transpose buffer is needed only for NHWC exports; NCHW planes can be read directly.
   _ModelTensorWorkspace _createTensorWorkspace() {
     final inputBuffer = Float32List(_inputTensorElementCount);
     final rawOutputs = <int, Object>{};
@@ -513,6 +554,10 @@ class ModelService {
     );
   }
 
+  /// Reads [1,39,8400] as 39 channel planes, not 8400 rows of 39 values.
+  /// Channels 0-3 are xywh, 4-6 are the three class scores, and 7-38 are mask coefficients.
+  /// Selects the best of classes 0-2, applies the confidence threshold, rejects invalid
+  /// geometry/scores, and retains coefficients separately; there is no separate objectness channel.
   List<_SegmentationCandidate> _parseSegmentationCandidates({
     required Float32List detectionOutput,
     required _PreprocessMetadata metadata,
@@ -651,6 +696,8 @@ class ModelService {
     return candidates;
   }
 
+  /// Converts this bundled export's normalized center-x/center-y/width/height to 640-space corners.
+  /// A replacement export must be verified before assuming it uses the same coordinate units.
   Rect _decodeModelSpaceBox({
     required double cx,
     required double cy,
@@ -671,6 +718,7 @@ class ModelService {
     );
   }
 
+  /// Clamps decoded corners to the model canvas before remapping or reconstructing masks.
   Rect _clipBoxToModel(Rect box) {
     final modelSize = AppConstants.modelInputSize.toDouble();
     return Rect.fromLTRB(
@@ -681,6 +729,8 @@ class ModelService {
     );
   }
 
+  /// Reverses letterboxing: subtract left/top padding, then divide by the resize gain.
+  /// Clamps the result to original-image pixels to exclude padded areas.
   Rect _scaleBoxToOriginal({
     required Rect modelSpaceBox,
     required _PreprocessMetadata metadata,
@@ -698,6 +748,8 @@ class ModelService {
     );
   }
 
+  /// Combines each NMS survivor's coefficients with prototypes and checks foreground support.
+  /// Rejects unsupported/empty masks as a sanity filter, not a guarantee against model false positives.
   List<_SegmentationCandidate> _attachMasksAndFilterCandidates({
     required List<_SegmentationCandidate> candidates,
     required Float32List protoTensor,
@@ -753,6 +805,9 @@ class ModelService {
     return kept;
   }
 
+  /// Samples prototype logits in the original fruit region into a compact binary grid.
+  /// Forward-maps original pixels through letterbox metadata, thresholds logits, and smooths
+  /// the grid; normalized bounds let the painter align it at any displayed image size.
   SegmentationMask? _buildDisplayMask({
     required _SegmentationCandidate candidate,
     required Float32List maskLogits,
@@ -825,6 +880,7 @@ class ModelService {
     );
   }
 
+  /// Converts NHWC prototypes to contiguous channel planes required by mask reconstruction.
   void _copyProtoTensor({
     required Float32List rawProto,
     required Float32List channelFirstProto,
@@ -846,6 +902,9 @@ class ModelService {
     }
   }
 
+  /// Reads actual interpreter shapes and requires float32 input/output tensors.
+  /// Accepts 640x640 RGB in NCHW/NHWC, detections [1,39,8400], and 32 prototypes
+  /// at 160x160 in either layout; resolves output indices by shape, not assumed ordering.
   void _validateModelSignature() {
     if (_interpreter == null) {
       return;
@@ -926,6 +985,7 @@ class ModelService {
     }
   }
 
+  /// Prints tensor names, dimensions, and dtypes once per load in debug mode.
   void _logTensorShapes() {
     if (!kDebugMode || _interpreter == null || _didLogTensorShapes) {
       return;
@@ -950,6 +1010,7 @@ class ModelService {
     }
   }
 
+  /// Prints a small confidence-ranked candidate sample rather than all 8400 anchors.
   void _logDebugCandidates({
     required String label,
     required List<_DebugCandidate> candidates,
@@ -963,6 +1024,7 @@ class ModelService {
     );
   }
 
+  /// Logs final stage/confidence/normalized-box values for pipeline inspection.
   void _logDetectionPreview({
     required List<Detection> detections,
     required String label,
@@ -984,6 +1046,7 @@ class ModelService {
     debugPrint('$label: $preview');
   }
 
+  /// Keeps only the highest-scoring debug candidates in a bounded sample.
   void _pushDebugCandidate(
     List<_DebugCandidate> bucket,
     _DebugCandidate candidate,
@@ -995,6 +1058,7 @@ class ModelService {
     }
   }
 
+  /// Formats an anchor's score and validates its class before producing a debug label.
   String _formatDebugCandidate(_DebugCandidate candidate) {
     final className = _isValidClassIndex(candidate.classIndex)
         ? _classFromIndex(candidate.classIndex).label
@@ -1002,10 +1066,12 @@ class ModelService {
     return '#${candidate.anchor} $className ${candidate.confidence.toStringAsFixed(3)}';
   }
 
+  /// Allows only the trained class indices 0, 1, and 2, never mask channels as labels.
   bool _isValidClassIndex(int classIndex) {
     return classIndex >= 0 && classIndex < _classCount;
   }
 
+  /// Uses dataset order: 0 Immature, 1 Mature, 2 Overmature; invalid values become Unknown.
   MaturityClass _classFromIndex(int classIndex) {
     switch (classIndex) {
       case 0:
@@ -1019,10 +1085,13 @@ class ModelService {
     }
   }
 
+  /// Multiplies tensor dimensions to allocate the exact flat float32 buffer length.
   int _elementCount(List<int> shape) {
     return shape.fold<int>(1, (product, value) => product * value);
   }
 
+  /// Reads a channel-first anchor value at channel * 8400 + anchor with bounds guards.
+  /// Using anchor * 39 + channel here would mix coordinates, class scores, and mask coefficients.
   double _detectionValueAt(
     Float32List detectionOutput, {
     required int channel,
@@ -1037,6 +1106,7 @@ class ModelService {
     return detectionOutput[(channel * _candidateCount) + anchor];
   }
 
+  /// Checks dimension-by-dimension equality when identifying the model's outputs.
   bool _sameShape(List<int> a, List<int> b) {
     if (a.length != b.length) {
       return false;
@@ -1049,14 +1119,17 @@ class ModelService {
     return true;
   }
 
+  /// Clamps floating-point coordinates to safe image/model bounds.
   double _clamp(double value, double min, double max) {
     return (value.clamp(min, max) as num).toDouble();
   }
 
+  /// Clamps integer prototype/grid indices to valid sampling bounds.
   int _clampInt(int value, int min, int max) {
     return value.clamp(min, max);
   }
 
+  /// Closes the interpreter and delegate and drops cached tensor buffers/layout metadata.
   void dispose() {
     _interpreter?.close();
     _delegate?.delete();
@@ -1081,6 +1154,7 @@ class _InterpreterRuntime {
   final Delegate? delegate;
 }
 
+/// Reusable native-facing tensor storage; avoids large allocations every frame.
 class _ModelTensorWorkspace {
   const _ModelTensorWorkspace({
     required this.inputBuffer,
@@ -1120,6 +1194,7 @@ class _MutableModelPipelineTimings {
   int postprocessMicros = 0;
   int totalMicros = 0;
 
+  /// Freezes measured pipeline durations for reporting outside the processing routine.
   ModelPipelineTimings toImmutable() {
     return ModelPipelineTimings(
       preprocessMicros: preprocessMicros,
@@ -1136,6 +1211,7 @@ class _MutableModelPipelineTimings {
   }
 }
 
+/// Original dimensions and letterbox transform needed to undo padding/resizing.
 class _PreprocessMetadata {
   const _PreprocessMetadata({
     required this.originalWidth,
@@ -1152,6 +1228,7 @@ class _PreprocessMetadata {
   final double topPad;
 }
 
+/// Internal prediction before conversion to UI coordinates and final mask filtering.
 class _SegmentationCandidate {
   const _SegmentationCandidate({
     required this.modelSpaceBox,
@@ -1169,6 +1246,7 @@ class _SegmentationCandidate {
   final Float32List maskCoefficients;
   final SegmentationMask? visualMask;
 
+  /// Attaches a reconstructed display mask without changing the candidate's model prediction.
   _SegmentationCandidate copyWith({SegmentationMask? visualMask}) {
     return _SegmentationCandidate(
       modelSpaceBox: modelSpaceBox,
@@ -1180,6 +1258,7 @@ class _SegmentationCandidate {
     );
   }
 
+  /// Normalizes original-image corners to 0-1 UI bounds and attaches the fixed stage and mask.
   Detection toDetection(_PreprocessMetadata metadata) {
     final normalizedBox = Rect.fromLTWH(
       (originalSpaceBox.left / metadata.originalWidth).clamp(0.0, 1.0),
@@ -1196,6 +1275,7 @@ class _SegmentationCandidate {
     );
   }
 
+  /// Maps only trained IDs to stages, using Unknown defensively for invalid values.
   static MaturityClass _classIndexToMaturityClass(int classIndex) {
     switch (classIndex) {
       case 0:

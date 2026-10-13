@@ -7,6 +7,7 @@ enum ImageTensorLayout {
   channelsFirst,
   channelsLast;
 
+  /// Accepts only the expected NCHW or NHWC signature; never guesses layout from model names.
   static ImageTensorLayout fromShape(
     List<int> shape, {
     required int channels,
@@ -26,6 +27,10 @@ enum ImageTensorLayout {
   }
 
   /// Packs RGB / 255 into the reusable input buffer, including letterbox fill.
+  ///
+  /// Produces float32 values in 0-1, not BGR or -1 to 1 normalization.
+  /// NCHW uses index = channel * planeSize + pixel; NHWC uses pixel * 3 + channel.
+  /// Optional range collection is for diagnostics and is disabled on normal scans.
   ({double minValue, double maxValue}) writeRgbImage({
     required img.Image image,
     required Float32List buffer,
@@ -71,6 +76,7 @@ enum ImageTensorLayout {
   }
 
   /// Mask reconstruction uses contiguous channel planes internally.
+  /// Converts NHWC pixel-interleaved values into NCHW planes without changing values.
   void copyToChannelFirst({
     required Float32List source,
     required Float32List destination,
@@ -95,6 +101,7 @@ enum ImageTensorLayout {
     }
   }
 
+  /// Checks every dimension so unsupported tensor layouts fail explicitly.
   static bool _matches(List<int> actual, List<int> expected) {
     if (actual.length != expected.length) return false;
     for (var i = 0; i < actual.length; i++) {
