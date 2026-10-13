@@ -368,6 +368,66 @@ class LiveInferenceBackendInfo {
       '${selectedConfig.label} (${selectedConfig.threads} thread${selectedConfig.threads == 1 ? '' : 's'})';
 }
 
+class LiveInferenceBackendPolicy {
+  LiveInferenceBackendPolicy._();
+
+  static const androidPreferred = TfliteBackendConfig(
+    kind: TfliteBackendKind.nnapi,
+    label: 'NNAPI',
+    threads: 2,
+  );
+
+  static TfliteBackendConfig? preferredQuickBackend({
+    required bool isAndroid,
+    TfliteBackendConfig? cachedConfig,
+  }) {
+    if (!isAndroid || cachedConfig?.cacheKey == androidPreferred.cacheKey) {
+      return null;
+    }
+    return androidPreferred;
+  }
+
+  static List<TfliteBackendConfig> fallbackBackends({
+    required bool isAndroid,
+    required int processorCount,
+    TfliteBackendConfig? cachedConfig,
+    Set<String> excludedCacheKeys = const {},
+  }) {
+    final highThreadCount = math.max(2, math.min(4, processorCount ~/ 2));
+    final candidates = <TfliteBackendConfig>[
+      TfliteBackendConfig(
+        kind: TfliteBackendKind.xnnpack,
+        label: 'XNNPACK CPU',
+        threads: highThreadCount,
+      ),
+      const TfliteBackendConfig(
+        kind: TfliteBackendKind.xnnpack,
+        label: 'XNNPACK CPU',
+        threads: 2,
+      ),
+      TfliteBackendConfig(
+        kind: TfliteBackendKind.cpu,
+        label: 'CPU',
+        threads: highThreadCount,
+      ),
+      TfliteBackendConfig.cpu2,
+      if (isAndroid)
+        const TfliteBackendConfig(
+          kind: TfliteBackendKind.gpu,
+          label: 'GPU delegate',
+          threads: 1,
+        ),
+    ];
+
+    final seen = <String>{};
+    return candidates
+        .where((config) => config.cacheKey != cachedConfig?.cacheKey)
+        .where((config) => !excludedCacheKeys.contains(config.cacheKey))
+        .where((config) => seen.add(config.cacheKey))
+        .toList(growable: false);
+  }
+}
+
 enum LiveInferenceImageFormat {
   yuv420,
   bgra8888,
@@ -529,9 +589,39 @@ class _LiveInferenceWorkerRuntime {
     }
 
     final attempts = <TfliteBackendBenchmark>[];
+    final preferredConfig = LiveInferenceBackendPolicy.preferredQuickBackend(
+      isAndroid: Platform.isAndroid,
+      cachedConfig: cachedConfig,
+    );
+    if (preferredConfig != null) {
+      final preferredAttempt = await _tryBackend(
+        modelBytes: modelBytes,
+        config: preferredConfig,
+        warmupRuns: 1,
+        measuredRuns: 1,
+      );
+      attempts.add(preferredAttempt.benchmark);
+      if (preferredAttempt.service != null) {
+        _modelService = preferredAttempt.service;
+        _backendInfo = LiveInferenceBackendInfo(
+          selectedConfig: preferredConfig,
+          attempts: attempts,
+          fromCache: false,
+        );
+        return _backendInfo!;
+      }
+    }
+
     _BackendAttempt? bestAttempt;
 
-    for (final config in _candidateBackends(cachedConfig)) {
+    for (final config in LiveInferenceBackendPolicy.fallbackBackends(
+      isAndroid: Platform.isAndroid,
+      processorCount: Platform.numberOfProcessors,
+      cachedConfig: cachedConfig,
+      excludedCacheKeys: {
+        if (preferredConfig != null) preferredConfig.cacheKey,
+      },
+    )) {
       final attempt = await _tryBackend(
         modelBytes: modelBytes,
         config: config,
@@ -618,51 +708,6 @@ class _LiveInferenceWorkerRuntime {
         ),
       );
     }
-  }
-
-  List<TfliteBackendConfig> _candidateBackends(
-    TfliteBackendConfig? cachedConfig,
-  ) {
-    final highThreadCount = math.max(
-      2,
-      math.min(4, Platform.numberOfProcessors ~/ 2),
-    );
-    final candidates = <TfliteBackendConfig>[
-      if (Platform.isAndroid)
-        const TfliteBackendConfig(
-          kind: TfliteBackendKind.gpu,
-          label: 'GPU delegate',
-          threads: 1,
-        ),
-      if (Platform.isAndroid)
-        const TfliteBackendConfig(
-          kind: TfliteBackendKind.nnapi,
-          label: 'NNAPI',
-          threads: 2,
-        ),
-      TfliteBackendConfig(
-        kind: TfliteBackendKind.xnnpack,
-        label: 'XNNPACK CPU',
-        threads: highThreadCount,
-      ),
-      const TfliteBackendConfig(
-        kind: TfliteBackendKind.xnnpack,
-        label: 'XNNPACK CPU',
-        threads: 2,
-      ),
-      TfliteBackendConfig(
-        kind: TfliteBackendKind.cpu,
-        label: 'CPU',
-        threads: highThreadCount,
-      ),
-      TfliteBackendConfig.cpu2,
-    ];
-
-    final seen = <String>{};
-    return candidates
-        .where((config) => config.cacheKey != cachedConfig?.cacheKey)
-        .where((config) => seen.add(config.cacheKey))
-        .toList(growable: false);
   }
 
   Future<LiveInferenceResult> detect(LiveInferenceFrame frame) async {

@@ -5,6 +5,14 @@ import 'package:flutter/services.dart';
 class CameraFramePolicy {
   CameraFramePolicy._();
 
+  static ResolutionPreset liveResolution(TargetPlatform platform) =>
+      ResolutionPreset.medium;
+
+  static int liveFrameRate(
+    TargetPlatform platform, {
+    required int fallbackFps,
+  }) => platform == TargetPlatform.android ? 15 : fallbackFps;
+
   static ImageFormatGroup imageFormat(TargetPlatform platform) =>
       platform == TargetPlatform.iOS
       ? ImageFormatGroup.bgra8888

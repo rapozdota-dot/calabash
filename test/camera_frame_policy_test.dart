@@ -26,6 +26,25 @@ void main() {
     );
   });
 
+  test('throttles Android live frames without reducing capture resolution', () {
+    expect(
+      CameraFramePolicy.liveResolution(TargetPlatform.android),
+      ResolutionPreset.medium,
+    );
+    expect(
+      CameraFramePolicy.liveFrameRate(TargetPlatform.android, fallbackFps: 30),
+      15,
+    );
+    expect(
+      CameraFramePolicy.liveResolution(TargetPlatform.iOS),
+      ResolutionPreset.medium,
+    );
+    expect(
+      CameraFramePolicy.liveFrameRate(TargetPlatform.iOS, fallbackFps: 30),
+      30,
+    );
+  });
+
   test(
     'does not rotate already-oriented iOS frames in any device orientation',
     () {
