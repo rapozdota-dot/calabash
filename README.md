@@ -159,7 +159,8 @@ manually with `workflow_dispatch`. It pins Flutter
 `3.38.7`, runs analysis and tests, installs CocoaPods dependencies during the
 iOS build, and runs `flutter build ios --release --no-codesign`. It packages
 `Payload/Runner.app` into `dist/Calabash-unsigned.ipa` and uploads that IPA as a
-workflow artifact. Each build uses its workflow run number as the app build number.
+workflow artifact and attaches it to a named iOS GitHub Release for direct
+download. Each build uses its workflow run number as the app build number.
 
 `Calabash-unsigned.ipa` is an unsigned artifact. It must be signed before it can
 be installed on a physical iPhone.
@@ -213,4 +214,5 @@ Every push to `main` or `master` also runs the iOS unsigned IPA workflow:
 
 The iOS workflow analyzes the project, runs tests, builds an unsigned iOS app,
 packages it as `Calabash-unsigned.ipa`, and uploads the IPA as a downloadable
-artifact.
+artifact and public iOS release asset. iOS releases do not replace the latest
+Android release. The IPA still requires signing before installation.

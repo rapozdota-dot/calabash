@@ -11,6 +11,8 @@ on:
 jobs:
   build-ios:
     runs-on: macos-15
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -43,8 +45,31 @@ jobs:
           zip -qry ../dist/Calabash-unsigned.ipa Payload
 
       - name: Upload IPA artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
+          name: calabash-ios-unsigned-${{ github.run_number }}
           path: dist/Calabash-unsigned.ipa
-          archive: false
           retention-days: 14
+
+      - name: Name iOS release
+        run: |
+          version=$(sed -n 's/^version: *\([^+ ]*\).*/\1/p' pubspec.yaml)
+          echo "IOS_RELEASE_NAME=Calabash v${version} - iOS Build ${GITHUB_RUN_NUMBER} - Unsigned IPA" >> "$GITHUB_ENV"
+
+      - name: Publish downloadable iOS release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ env.IOS_RELEASE_NAME }}
+          body: |
+            Calabash Maturity Detection for iOS.
+
+            Download Calabash-unsigned.ipa from Assets below.
+            This IPA is unsigned and must be signed before installation on an iPhone.
+            This is not a TestFlight or App Store build.
+
+            Commit: ${{ github.sha }}
+          files: dist/Calabash-unsigned.ipa
+          fail_on_unmatched_files: true
+          make_latest: false
