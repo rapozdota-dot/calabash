@@ -2,10 +2,7 @@
 name: Build Calabash iOS IPA
 
 on:
-  push:
-    branches:
-      - main
-      - master
+  # iOS builds are manual-only; normal updates build Android only.
   workflow_dispatch:
 
 jobs:
