@@ -33,6 +33,18 @@ jobs:
       - name: Build unsigned iOS app
         run: flutter build ios --release --no-codesign --build-number=${{ github.run_number }}
 
+      - name: Record source revision
+        run: |
+          mkdir -p dist
+          {
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Workflow: $GITHUB_WORKFLOW"
+            echo "Run: $GITHUB_RUN_ID"
+            echo "Ref: $GITHUB_REF"
+            echo "Branch or tag: $GITHUB_REF_NAME"
+            echo "Commit: $GITHUB_SHA"
+          } > dist/Calabash-source-info.txt
+
       - name: Package IPA
         run: |
           mkdir -p package/Payload
@@ -45,13 +57,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: calabash-ios-unsigned-${{ github.run_number }}
-          path: dist/Calabash-unsigned.ipa
+          path: |
+            dist/Calabash-unsigned.ipa
+            dist/Calabash-source-info.txt
           retention-days: 14
 
       - name: Name iOS release
         run: |
           version=$(sed -n 's/^version: *\([^+ ]*\).*/\1/p' pubspec.yaml)
-          echo "IOS_RELEASE_NAME=Calabash v${version} - iOS Build ${GITHUB_RUN_NUMBER} - Unsigned IPA" >> "$GITHUB_ENV"
+          echo "IOS_RELEASE_NAME=Calabash v${version} - iOS Build ${GITHUB_RUN_NUMBER} - ${GITHUB_REF_NAME} - Unsigned IPA" >> "$GITHUB_ENV"
 
       - name: Publish downloadable iOS release
         uses: softprops/action-gh-release@v2
@@ -66,7 +80,11 @@ jobs:
             This IPA is unsigned and must be signed before installation on an iPhone.
             This is not a TestFlight or App Store build.
 
+            Ref: ${{ github.ref }}
+            Branch or tag: ${{ github.ref_name }}
             Commit: ${{ github.sha }}
-          files: dist/Calabash-unsigned.ipa
+          files: |
+            dist/Calabash-unsigned.ipa
+            dist/Calabash-source-info.txt
           fail_on_unmatched_files: true
           make_latest: false

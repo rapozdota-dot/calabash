@@ -80,6 +80,28 @@ void main() {
     );
   }
 
+  testWidgets('splash copy and weights match the Android reference', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: MediaQuery(
+          data: MediaQueryData(disableAnimations: true),
+          child: BrandedSplashScreen(),
+        ),
+      ),
+    );
+
+    final title = tester.widget<Text>(find.text('CALABASH'));
+    final subtitle = tester.widget<Text>(find.text('MATURITY DETECTION'));
+    final poweredBy = tester.widget<Text>(find.text('POWERED BY YOLOv8n-seg'));
+
+    expect(title.style?.fontWeight, FontWeight.w900);
+    expect(subtitle.style?.fontWeight, FontWeight.w900);
+    expect(poweredBy.style?.fontWeight, FontWeight.w800);
+    expect(find.text('POWERED BY COMPUTER VISION'), findsNothing);
+  });
+
   testWidgets('background appears before foreground and typography fade in', (
     tester,
   ) async {
