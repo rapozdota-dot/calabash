@@ -314,6 +314,7 @@ class ModelService {
       candidates,
       boxOf: (candidate) => candidate.modelSpaceBox,
       confidenceOf: (candidate) => candidate.confidence,
+      classOf: (candidate) => candidate.classIndex,
       iouThreshold: AppConstants.iouThreshold,
       maxDetections: _maxDetections,
     );

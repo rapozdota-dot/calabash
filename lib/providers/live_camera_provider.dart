@@ -5,6 +5,7 @@ import 'package:camera/camera.dart';
 import 'package:calabash_maturity_detection/providers/live_detection_tracker.dart';
 import 'package:calabash_maturity_detection/providers/live_result_policy.dart';
 import 'package:calabash_maturity_detection/services/camera_image_converter.dart';
+import 'package:calabash_maturity_detection/services/camera_frame_policy.dart';
 import 'package:calabash_maturity_detection/services/live_inference_worker.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
@@ -304,7 +305,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         ResolutionPreset.medium,
         enableAudio: false,
         fps: AppConstants.liveCameraFps,
-        imageFormatGroup: ImageFormatGroup.yuv420,
+        imageFormatGroup: CameraFramePolicy.imageFormat(defaultTargetPlatform),
       );
 
       _cameraController = controller;
@@ -736,17 +737,11 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     CameraDescription camera,
     DeviceOrientation deviceOrientation,
   ) {
-    final deviceDegrees = switch (deviceOrientation) {
-      DeviceOrientation.portraitUp => 0,
-      DeviceOrientation.landscapeLeft => 90,
-      DeviceOrientation.portraitDown => 180,
-      DeviceOrientation.landscapeRight => 270,
-    };
-
-    if (camera.lensDirection == CameraLensDirection.front) {
-      return (camera.sensorOrientation + deviceDegrees) % 360;
-    }
-    return (camera.sensorOrientation - deviceDegrees + 360) % 360;
+    return CameraFramePolicy.rotationDegrees(
+      platform: defaultTargetPlatform,
+      camera: camera,
+      orientation: deviceOrientation,
+    );
   }
 
   Future<void> _releaseCamera({required bool keepLiveState}) async {
