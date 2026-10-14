@@ -13,6 +13,7 @@ class BrandedSplashScreen extends StatefulWidget {
   static const _foregroundAspectRatio = 832 / 1248;
   static const _animationDuration = Duration(milliseconds: 700);
 
+  /// Creates the state that owns the loading splash's fade animations.
   @override
   State<BrandedSplashScreen> createState() => _BrandedSplashScreenState();
 }
@@ -23,6 +24,7 @@ class _BrandedSplashScreenState extends State<BrandedSplashScreen>
   late final Animation<double> _foregroundOpacity;
   late final Animation<double> _typographyOpacity;
 
+  /// Sets up staggered foreground-art and text fades using one animation controller.
   @override
   void initState() {
     super.initState();
@@ -40,6 +42,7 @@ class _BrandedSplashScreenState extends State<BrandedSplashScreen>
     );
   }
 
+  /// Respects reduced-motion settings and starts the intro only when needed.
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -53,12 +56,14 @@ class _BrandedSplashScreenState extends State<BrandedSplashScreen>
     }
   }
 
+  /// Releases the animation controller when the splash leaves the widget tree.
   @override
   void dispose() {
     _controller.dispose();
     super.dispose();
   }
 
+  /// Fits the loading artwork to the viewport and places readable model-credit text below it.
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -139,6 +144,7 @@ class _BrandedSplashScreenState extends State<BrandedSplashScreen>
 class _BottomLegibilityGradient extends StatelessWidget {
   const _BottomLegibilityGradient();
 
+  /// Darkens the bottom of the artwork so splash text stays legible.
   @override
   Widget build(BuildContext context) {
     return const DecoratedBox(
@@ -157,6 +163,7 @@ class _BottomLegibilityGradient extends StatelessWidget {
 class _SplashTypography extends StatelessWidget {
   const _SplashTypography();
 
+  /// Renders the app title and POWERED BY YOLOv8n-seg credit on the loading splash.
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;

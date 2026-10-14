@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+/// Creates the shared fade navigation transition for scan and result screens.
 Route<T> fadeRoute<T>(Widget page) {
   return PageRouteBuilder<T>(
     pageBuilder: (context, animation, secondaryAnimation) => page,

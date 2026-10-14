@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 enum MaturityClass { immature, mature, overmature, unknown }
 
 extension MaturityClassX on MaturityClass {
+  /// Converts a maturity enum into its farmer-facing name, including unknown results.
   String get label {
     switch (this) {
       case MaturityClass.immature:
@@ -19,6 +20,7 @@ extension MaturityClassX on MaturityClass {
     }
   }
 
+  /// Maps maturity stages to consistent yellow, green, red, or unknown-state colors.
   Color get color {
     switch (this) {
       case MaturityClass.immature:
@@ -33,6 +35,8 @@ extension MaturityClassX on MaturityClass {
   }
 }
 
+/// One fruit prediction; box coordinates are normalized to the original image.
+/// Confidence is the selected model class score, not a guarantee of correctness.
 class Detection {
   const Detection({
     required this.boundingBox,
@@ -47,6 +51,9 @@ class Detection {
   final SegmentationMask? mask;
 }
 
+/// Compact row-major binary silhouette (0 background, 1 fruit).
+/// Bounds are normalized image coordinates; width/height describe the mask grid.
+/// Transparency is applied by the painter, not stored in these binary pixels.
 class SegmentationMask {
   const SegmentationMask({
     required this.bounds,
@@ -60,8 +67,10 @@ class SegmentationMask {
   final int height;
   final Uint8List pixels;
 
+  /// Reports whether the binary mask has no active foreground pixels.
   bool get isEmpty => !pixels.contains(1);
 
+  /// Reads a binary mask pixel safely; coordinates outside the mask are background.
   bool isActive(int x, int y) {
     if (x < 0 || x >= width || y < 0 || y >= height) {
       return false;

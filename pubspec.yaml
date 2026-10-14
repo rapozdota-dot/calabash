@@ -68,6 +68,7 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/fonts/
     - assets/model/model.tflite
     - assets/branding/BG.png
     - assets/branding/splash_screen.png

@@ -8,6 +8,7 @@ class ResultCard extends StatelessWidget {
   final Detection detection;
   final int index;
 
+  /// Shows one fruit's number, maturity label, color, and rounded confidence percentage.
   @override
   Widget build(BuildContext context) {
     final color = detection.maturityClass.color;

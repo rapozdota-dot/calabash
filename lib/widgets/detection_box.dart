@@ -28,6 +28,7 @@ class AnimatedDetectionBox extends ImplicitlyAnimatedWidget {
   final String? subtitle;
   final Color? colorOverride;
 
+  /// Creates the implicit-animation state for tracked geometry changes.
   @override
   AnimatedWidgetBaseState<AnimatedDetectionBox> createState() =>
       _AnimatedDetectionBoxState();
@@ -38,6 +39,7 @@ class _AnimatedDetectionBoxState
   _RectTween? _boundingBoxTween;
   _RectTween? _maskBoundsTween;
 
+  /// Updates rectangle tweens for box and mask bounds when a track moves.
   @override
   void forEachTween(TweenVisitor<dynamic> visitor) {
     _boundingBoxTween =
@@ -59,6 +61,7 @@ class _AnimatedDetectionBoxState
               as _RectTween?;
   }
 
+  /// Draws the detection using interpolated bounds while preserving its class and mask pixels.
   @override
   Widget build(BuildContext context) {
     final animatedDetection = _animatedDetection();
@@ -75,6 +78,7 @@ class _AnimatedDetectionBoxState
     );
   }
 
+  /// Interpolates placement only; the current inference supplies the actual mask grid.
   Detection _animatedDetection() {
     final detection = widget.detection;
     final animatedBoundingBox =
@@ -107,6 +111,7 @@ class _AnimatedDetectionBoxState
 class _RectTween extends Tween<Rect> {
   _RectTween({super.begin});
 
+  /// Interpolates rectangle corners between consecutive overlay positions.
   @override
   Rect lerp(double t) => Rect.lerp(begin, end, t)!;
 }
@@ -135,6 +140,7 @@ class DetectionBox extends StatelessWidget {
   final String? subtitle;
   final Color? colorOverride;
 
+  /// Positions a transparent mask and compact stage label within the displayed image rectangle.
   @override
   Widget build(BuildContext context) {
     final color = colorOverride ?? detection.maturityClass.color;
@@ -162,16 +168,9 @@ class DetectionBox extends StatelessWidget {
                 isComplex: true,
               ),
             ),
-            Positioned(
-              left: labelBounds.left,
-              top: labelBounds.top,
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxWidth: (imageWidth - labelBounds.left - 8).clamp(
-                    92.0,
-                    220.0,
-                  ),
-                ),
+            Positioned.fill(
+              child: CustomSingleChildLayout(
+                delegate: _DetectionLabelLayout(labelBounds.topLeft),
                 child: DecoratedBox(
                   decoration: BoxDecoration(
                     color: color.withValues(alpha: 0.95),
@@ -229,11 +228,12 @@ class DetectionBox extends StatelessWidget {
     );
   }
 
+  /// Anchors the label near mask bounds and clamps it away from image edges.
   Rect get _labelBounds {
     final mask = detection.mask;
     final bounds = mask?.bounds ?? detection.boundingBox;
-    final left = (bounds.left * imageWidth).clamp(6.0, imageWidth - 96);
-    final top = ((bounds.top * imageHeight) - 8).clamp(6.0, imageHeight - 44);
+    final left = bounds.left * imageWidth;
+    final top = bounds.top * imageHeight - 8;
 
     return Rect.fromLTWH(
       left,
@@ -244,12 +244,39 @@ class DetectionBox extends StatelessWidget {
   }
 }
 
+/// Clamps using the label's measured size, including Android text scaling.
+/// Fixed 96x44 assumptions fail for narrow photos and labels near the bottom.
+class _DetectionLabelLayout extends SingleChildLayoutDelegate {
+  const _DetectionLabelLayout(this.anchor);
+
+  final Offset anchor;
+
+  @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) =>
+      BoxConstraints(maxWidth: constraints.maxWidth.clamp(0.0, 220.0));
+
+  @override
+  Offset getPositionForChild(Size size, Size childSize) => Offset(
+    anchor.dx.clamp(0.0, (size.width - childSize.width).clamp(0.0, size.width)),
+    anchor.dy.clamp(
+      0.0,
+      (size.height - childSize.height).clamp(0.0, size.height),
+    ),
+  );
+
+  @override
+  bool shouldRelayout(_DetectionLabelLayout oldDelegate) =>
+      anchor != oldDelegate.anchor;
+}
+
 class _DetectionMaskPainter extends CustomPainter {
   const _DetectionMaskPainter({required this.detection, required this.color});
 
   final Detection detection;
   final Color color;
 
+  /// Scales active binary cells into image coordinates and draws a translucent silhouette.
+  /// Interior opacity is 14%, edges 42%, keeping the real fruit visible beneath the overlay.
   @override
   void paint(Canvas canvas, Size size) {
     final mask = detection.mask;
@@ -303,6 +330,8 @@ class _DetectionMaskPainter extends CustomPainter {
     canvas.drawPath(edgePath, edgePaint);
   }
 
+  /// Draws a faint rounded region only if a detection lacks a usable mask.
+  /// It is a visual fallback, not a reconstructed segmentation silhouette.
   void _paintSoftFallback(Canvas canvas, Size size) {
     final box = detection.boundingBox;
     final rect = Rect.fromLTWH(
@@ -327,6 +356,7 @@ class _DetectionMaskPainter extends CustomPainter {
     );
   }
 
+  /// Identifies foreground cells bordering background in four directions for subtle outlines.
   bool _isEdge(SegmentationMask mask, int x, int y) {
     return !mask.isActive(x - 1, y) ||
         !mask.isActive(x + 1, y) ||
@@ -334,6 +364,7 @@ class _DetectionMaskPainter extends CustomPainter {
         !mask.isActive(x, y + 1);
   }
 
+  /// Requests repainting only when detection data or its drawing color changes.
   @override
   bool shouldRepaint(covariant _DetectionMaskPainter oldDelegate) {
     return oldDelegate.detection != detection || oldDelegate.color != color;

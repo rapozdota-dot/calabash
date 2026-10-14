@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
 
+  /// Displays the project purpose, offline model workflow, and research information.
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -81,6 +82,7 @@ class AboutScreen extends StatelessWidget {
     );
   }
 
+  /// Styles section headings consistently within the About page.
   Widget _sectionTitle(String text) {
     return Text(text, style: const TextStyle(fontWeight: FontWeight.w900));
   }

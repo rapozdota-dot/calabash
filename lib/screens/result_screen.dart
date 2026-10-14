@@ -16,6 +16,7 @@ class ResultScreen extends StatelessWidget {
   // Live capture keeps its camera route underneath and resumes it after pop.
   final bool returnToLiveCamera;
 
+  /// Observes the photo result and shows its image, masks, guidance, and retry actions.
   @override
   Widget build(BuildContext context) {
     return Consumer<DetectionProvider>(
@@ -27,22 +28,30 @@ class ResultScreen extends StatelessWidget {
         final imageFile = provider.selectedImage!;
         final detections = provider.detections;
 
-        return Scaffold(
-          appBar: AppBar(title: const Text('Detection Result')),
-          body: SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(AppConstants.resultPagePadding),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  DetectionImage(imageFile: imageFile, detections: detections),
-                  if (provider.errorMessage != null && !provider.isBusy) ...[
+        return PopScope(
+          onPopInvokedWithResult: (didPop, result) {
+            if (didPop && provider.isBusy) provider.clearCurrentResult();
+          },
+          child: Scaffold(
+            appBar: AppBar(title: const Text('Detection Result')),
+            body: SafeArea(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(AppConstants.resultPagePadding),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    DetectionImage(
+                      imageFile: imageFile,
+                      detections: detections,
+                    ),
+                    if (provider.errorMessage != null && !provider.isBusy) ...[
+                      const SizedBox(height: AppConstants.sectionSpacing),
+                      _messageBanner(context, provider.errorMessage!),
+                    ],
                     const SizedBox(height: AppConstants.sectionSpacing),
-                    _messageBanner(context, provider.errorMessage!),
+                    ..._resultSections(context, provider),
                   ],
-                  const SizedBox(height: AppConstants.sectionSpacing),
-                  ..._resultSections(context, provider),
-                ],
+                ),
               ),
             ),
           ),
@@ -51,6 +60,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Provides a safe recovery screen when no photo is selected.
   Scaffold _noImageScaffold(BuildContext context, DetectionProvider provider) {
     return Scaffold(
       appBar: AppBar(title: const Text('Detection Result')),
@@ -82,11 +92,15 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Chooses zero-, single-, or multiple-fruit content to avoid redundant result cards.
   List<Widget> _resultSections(
     BuildContext context,
     DetectionProvider provider,
   ) {
     final detections = provider.detections;
+    if (provider.isAnalyzing || provider.errorMessage != null) {
+      return [_zeroDetectionState(context, provider)];
+    }
     if (detections.isEmpty) {
       return [_zeroDetectionState(context, provider)];
     }
@@ -115,6 +129,7 @@ class ResultScreen extends StatelessWidget {
     ];
   }
 
+  /// Displays an analysis error separately from successful detection information.
   Widget _messageBanner(BuildContext context, String message) {
     return Container(
       padding: const EdgeInsets.all(12),
@@ -144,6 +159,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Emphasizes one fruit's maturity and confidence without an unnecessary count summary.
   Widget _singleDetectionResult(BuildContext context, Detection detection) {
     final color = detection.maturityClass.color;
     final confidence = (detection.confidence * 100).toStringAsFixed(0);
@@ -183,8 +199,10 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Distinguishes active analysis from a completed scan with no calabash detections.
   Widget _zeroDetectionState(BuildContext context, DetectionProvider provider) {
     final isBusy = provider.isBusy;
+    final failed = !isBusy && provider.errorMessage != null;
 
     return Card(
       child: Padding(
@@ -201,7 +219,11 @@ class ResultScreen extends StatelessWidget {
             ),
             const SizedBox(height: AppConstants.smallSpacing),
             Text(
-              isBusy ? 'Analyzing image...' : 'No calabash fruits detected',
+              isBusy
+                  ? 'Analyzing image...'
+                  : failed
+                  ? 'Analysis could not be completed'
+                  : 'No calabash fruits detected',
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
@@ -211,6 +233,8 @@ class ResultScreen extends StatelessWidget {
             Text(
               isBusy
                   ? 'Please wait while the selected image is being processed.'
+                  : failed
+                  ? 'No detection result is available. Try another image or capture a new photo.'
                   : 'We could not find a calabash fruit in this image. Try a clearer photo with the fruit visible and well lit.',
               textAlign: TextAlign.center,
               style: Theme.of(
@@ -240,6 +264,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Presents harvest advice as suggested guidance, not a guaranteed decision.
   Widget _recommendationCard(BuildContext context, String recommendation) {
     return Card(
       color: AppConstants.secondaryLightGreen.withValues(alpha: 0.24),
@@ -256,11 +281,13 @@ class ResultScreen extends StatelessWidget {
                   size: 20,
                 ),
                 const SizedBox(width: 8),
-                Text(
-                  'Suggested guidance',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    color: AppConstants.primaryGreen,
-                    fontWeight: FontWeight.w900,
+                Flexible(
+                  child: Text(
+                    'Suggested guidance',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: AppConstants.primaryGreen,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
               ],
@@ -279,6 +306,7 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Selects cautious harvest wording for the detected maturity stage.
   String _guidanceForSingleDetection(Detection detection) {
     switch (detection.maturityClass) {
       case MaturityClass.immature:
@@ -292,6 +320,7 @@ class ResultScreen extends StatelessWidget {
     }
   }
 
+  /// Summarizes all present stages rather than hiding minority results behind a majority.
   String _guidanceForMultipleDetections(DetectionProvider provider) {
     final detectedClasses = provider.detections
         .map((detection) => detection.maturityClass)
@@ -312,10 +341,12 @@ class ResultScreen extends StatelessWidget {
     return '${guidanceParts.join('. ')}. Review the individual results below.';
   }
 
+  /// Formats singular/plural fruit counts in guidance text.
   String _fruitCount(int count) {
     return '$count ${count == 1 ? 'fruit' : 'fruits'}';
   }
 
+  /// Uses plural harvest guidance when every detected fruit has the same maturity stage.
   String _guidanceForUniformMultipleDetections(MaturityClass maturityClass) {
     switch (maturityClass) {
       case MaturityClass.immature:
@@ -329,6 +360,7 @@ class ResultScreen extends StatelessWidget {
     }
   }
 
+  /// Builds numbered per-fruit result cards for a multiple-detection photo.
   Widget _detectedList(BuildContext context, List<Detection> detections) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -351,14 +383,29 @@ class ResultScreen extends StatelessWidget {
     );
   }
 
+  /// Provides a direct camera retry action after viewing detections.
   Widget _scanAgainButton(BuildContext context, DetectionProvider provider) {
-    return OutlinedButton.icon(
-      onPressed: () => _startNewScan(context, provider),
-      icon: const Icon(Icons.refresh_rounded, size: 20),
-      label: const Text('Capture Again'),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        OutlinedButton.icon(
+          onPressed: provider.isBusy ? null : () => _tryAnotherImage(provider),
+          icon: const Icon(Icons.photo_library_outlined, size: 20),
+          label: const Text('Try Another Image'),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: provider.isBusy
+              ? null
+              : () => _startNewScan(context, provider),
+          icon: const Icon(Icons.refresh_rounded, size: 20),
+          label: const Text('Capture Again'),
+        ),
+      ],
     );
   }
 
+  /// Returns to the existing live camera when possible, otherwise opens one, and clears the photo.
   void _startNewScan(BuildContext context, DetectionProvider provider) {
     final navigator = Navigator.of(context);
     if (returnToLiveCamera && navigator.canPop()) {
@@ -369,6 +416,7 @@ class ResultScreen extends StatelessWidget {
     provider.clearCurrentResult();
   }
 
+  /// Runs the gallery picker again while staying on the current result route.
   Future<void> _tryAnotherImage(DetectionProvider provider) async {
     await provider.scanFromSource(ImageSource.gallery);
   }
