@@ -29,9 +29,9 @@ The app expects a YOLOv8 segmentation TFLite model with:
 - output 0: `[1, 39, 8400] float32`
 - mask prototypes: `[1, 32, 160, 160]` or `[1, 160, 160, 32] float32`
 
-The bundled model is restored from `revisionmodel.tflite` for an Android
-comparison release. It uses channel-last input and prototypes. Its SHA-256 is
-`c4f3c58c3351191603630592ecf504948baf6c64be92fd2b43c459a5663af2eb`.
+The bundled model is `latest14_10.tflite` (trained October 14, 2026).
+It uses channel-first input and prototypes. Its SHA-256 is
+`2e377b3b81edc3398d9d3ebf41f77dd7ad46d60a321f27ddc499a51ba9e68547`.
 Both live camera frames and capture/gallery images use the same `ModelService`, which
 reads the tensor signature to choose the correct layout. Images are letterboxed
 to 640x640 with fill 114, packed as RGB float32 / 255, and boxes are decoded
@@ -45,11 +45,12 @@ conservative settings can miss small or difficult fruits and should be checked
 on independent phone images. Mask support requires at least four prototype
 pixels and 1% of the candidate crop, followed by validation after smoothing.
 
-This rollback is a test release, not a confirmed fix for real-world accuracy.
-Direct TFLite testing of the supplied field photo produced no detections with
-either this revision or the newer `best.tflite`. The current Flutter pipeline
-also preserves detections and masks on sampled validation images. Broader
-field-photo validation is required before choosing the final model.
+Direct TFLite smoke testing produced fruit predictions at up to 97.7% confidence
+on the supplied field photo that the previous two models missed. Sampled
+Immature, Mature, and Overmature validation images also produced predictions;
+a blank image and a cucumber sample had no candidates above the 0.45 threshold.
+These checks confirm basic model behavior, not overall accuracy. More field
+photos and on-device validation are still required before the final defense.
 
 For inspecting a candidate model outside Flutter, `tool/diagnose_model.py`
 reports actual tensor values, class scores, and image normalization. It needs
