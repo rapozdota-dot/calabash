@@ -14,12 +14,14 @@ class LiveDetection {
     required this.detection,
     required this.confidenceTier,
     required this.animateBounds,
+    this.maturityUncertain = false,
   });
 
   final int trackId;
   final Detection detection;
   final LiveConfidenceTier confidenceTier;
   final bool animateBounds;
+  final bool maturityUncertain;
 }
 
 class LiveDetectionUpdate {
@@ -135,6 +137,9 @@ class LiveDetectionTracker {
             math.min(track.stableConfidence, detection.confidence),
           ),
           animateBounds: animateBounds,
+          maturityUncertain:
+              track.pendingClass != null ||
+              track.classAgreementCount < confirmationFrames,
         ),
       );
     }
@@ -280,7 +285,8 @@ class LiveDetectionTracker {
       (track) =>
           track.stableMotionFrameCount >=
               AppConstants.liveReadyStableFrameThreshold &&
-          track.pendingClass == null,
+          track.pendingClass == null &&
+          track.classAgreementCount >= confirmationFrames,
     );
 
     return allNormalConfidence && allTracksStable
@@ -360,6 +366,7 @@ class _StableDetectionTrack {
   MaturityClass stableClass;
   double stableConfidence;
   int observationCount = 1;
+  int classAgreementCount = 1;
   bool isConfirmed = false;
   int stableMotionFrameCount;
   MaturityClass? pendingClass;
@@ -380,18 +387,20 @@ class _StableDetectionTrack {
         : 0;
     boundingBox = detection.boundingBox;
 
-    // Confirmation requires a consistent stage, not just a nearby box twice.
+    // Repeated localization confirms fruit presence even if maturity fluctuates.
+    // Keep the stage tentative until a subsequent observation agrees.
     if (!isConfirmed && detection.maturityClass != stableClass) {
       stableClass = detection.maturityClass;
       stableConfidence = detection.confidence;
-      observationCount = 1;
+      classAgreementCount = 1;
       stableMotionFrameCount = hasNormalConfidence ? 1 : 0;
-      pendingClass = null;
-      pendingCount = 0;
+      pendingClass = detection.maturityClass;
+      pendingCount = 1;
       return;
     }
 
     if (detection.maturityClass == stableClass) {
+      classAgreementCount++;
       stableConfidence = detection.confidence;
       pendingClass = null;
       pendingCount = 0;
@@ -399,8 +408,9 @@ class _StableDetectionTrack {
     }
 
     // A weak conflicting stage cannot overwrite a confirmed label.
+    classAgreementCount = 0;
     if (!hasNormalConfidence) {
-      pendingClass = null;
+      pendingClass = detection.maturityClass;
       pendingCount = 0;
       return;
     }
@@ -413,6 +423,7 @@ class _StableDetectionTrack {
     }
 
     if (pendingCount >= AppConstants.liveStableClassFrames) {
+      classAgreementCount = pendingCount;
       stableClass = detection.maturityClass;
       stableConfidence = detection.confidence;
       pendingClass = null;

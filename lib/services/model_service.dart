@@ -7,6 +7,7 @@ import 'package:calabash_maturity_detection/services/segmentation_postprocessor.
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 
@@ -142,6 +143,7 @@ class ModelService {
   int? _detectionOutputIndex;
   int? _protoOutputIndex;
   _ModelTensorWorkspace? _tensorWorkspace;
+  Uint8List? _photoModelBytes;
 
   /// Reports interpreter availability; callers must still await loadModel for completed validation.
   bool get isModelReady => _interpreter != null;
@@ -271,10 +273,37 @@ class ModelService {
     );
   }
 
-  /// Decodes a picked/captured photo and runs the same segmentation pipeline used for frames.
+  /// Keeps JPEG decoding, tensor filling, inference, and masks off the UI thread.
+  /// A photo worker owns its interpreter; native handles are never shared across isolates.
   Future<List<Detection>> detectFruits(File imageFile) async {
-    final decodedImage = await _decodeImageFile(imageFile);
-    return detectFruitsFromImage(decodedImage);
+    final bytes = _photoModelBytes ??=
+        _modelBuffer ??
+        Uint8List.sublistView(
+          await rootBundle.load(AppConstants.modelAssetPath),
+        );
+    return compute(_inferPhoto, (
+      bytes: bytes,
+      path: imageFile.path,
+      threshold: _confidenceThreshold,
+      limit: _maxDetections,
+    ));
+  }
+
+  /// Uses the same parser and preprocessing as live frames, with deterministic CPU inference.
+  static Future<List<Detection>> _inferPhoto(
+    ({Uint8List bytes, String path, double threshold, int limit}) request,
+  ) async {
+    final service = ModelService(
+      modelBuffer: request.bytes,
+      confidenceThreshold: request.threshold,
+      maxDetections: request.limit,
+    );
+    try {
+      final image = await service._decodeImageFile(File(request.path));
+      return await service.detectFruitsFromImage(image);
+    } finally {
+      service.dispose();
+    }
   }
 
   /// Runs inference on an already decoded RGB image and returns final detections only.

@@ -25,6 +25,8 @@ class LiveInferenceWorker {
   Completer<void>? _disposeCompleter;
   var _nextRequestId = 1;
   bool _isDisposed = false;
+  Future<void>? _starting;
+  Completer<void>? _readyCompleter;
 
   LiveInferenceBackendInfo? backendInfo;
 
@@ -33,17 +35,28 @@ class LiveInferenceWorker {
 
   /// Loads asset bytes, transfers them to an isolate, and waits for its ready/error reply.
   /// Request IDs and completers associate asynchronous worker responses with their callers.
-  Future<void> start() async {
+  Future<void> start() {
+    if (_isDisposed) return Future.error(StateError('Worker is disposed.'));
+    return _starting ??= _start().whenComplete(() => _starting = null);
+  }
+
+  /// Aborts initialization cleanly if the camera closes while assets or the isolate load.
+  Future<void> _start() async {
     if (isReady) {
       return;
     }
 
     final modelData = await rootBundle.load(AppConstants.modelAssetPath);
+    if (_isDisposed) throw StateError('Worker closed during model loading.');
     final modelBytes = Uint8List.sublistView(modelData);
     final receivePort = ReceivePort();
     _receivePort = receivePort;
 
     final readyCompleter = Completer<void>();
+    _readyCompleter = readyCompleter;
+    // Attach the error handler before awaiting spawn; disposal can happen during spawn.
+    final ready = readyCompleter.future.timeout(const Duration(seconds: 60));
+    unawaited(ready.catchError((Object _) {}));
     _subscription = receivePort.listen((message) {
       if (message is _LiveInferenceWorkerReady) {
         _workerPort = message.sendPort;
@@ -89,7 +102,12 @@ class LiveInferenceWorker {
       debugName: 'CalabashLiveYoloWorker',
     );
 
-    await readyCompleter.future;
+    if (_isDisposed) {
+      _isolate?.kill(priority: Isolate.immediate);
+      _isolate = null;
+      throw StateError('Worker closed during startup.');
+    }
+    await ready;
   }
 
   /// Sends one transferred frame to the worker and returns the matching result future.
@@ -113,6 +131,10 @@ class LiveInferenceWorker {
     }
 
     _isDisposed = true;
+    final ready = _readyCompleter;
+    if (ready != null && !ready.isCompleted) {
+      ready.completeError(StateError('Worker closed during startup.'));
+    }
     final sendPort = _workerPort;
     if (sendPort != null) {
       final disposeCompleter = Completer<void>();

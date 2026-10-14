@@ -334,6 +334,7 @@ class _LiveDetectionOverlay extends StatelessWidget {
 
   /// Uses cautious wording for weak predictions instead of presenting them as certain.
   String _labelFor(int number, LiveDetection detection) {
+    if (detection.maturityUncertain) return '#$number Calabash';
     return switch (detection.confidenceTier) {
       LiveConfidenceTier.normal =>
         '#$number ${detection.detection.maturityClass.label}',
@@ -345,6 +346,7 @@ class _LiveDetectionOverlay extends StatelessWidget {
 
   /// Shows confidence or a camera-positioning hint according to prediction strength.
   String _subtitleFor(LiveDetection detection) {
+    if (detection.maturityUncertain) return 'Maturity uncertain';
     return switch (detection.confidenceTier) {
       LiveConfidenceTier.normal =>
         '${(detection.detection.confidence * 100).toStringAsFixed(0)}%',
@@ -355,6 +357,7 @@ class _LiveDetectionOverlay extends StatelessWidget {
 
   /// Uses maturity colors for normal-confidence results and caution colors otherwise.
   Color _colorFor(LiveDetection detection) {
+    if (detection.maturityUncertain) return AppConstants.unknownMaturityColor;
     return switch (detection.confidenceTier) {
       LiveConfidenceTier.normal => detection.detection.maturityClass.color,
       LiveConfidenceTier.weak => AppConstants.unknownMaturityColor,
@@ -516,47 +519,48 @@ class _LiveCaptureControls extends StatelessWidget {
     HapticFeedback.lightImpact();
     final liveProvider = context.read<LiveCameraProvider>();
     final detectionProvider = context.read<DetectionProvider>();
-    final capturedImage = await liveProvider.captureStillImage();
+    try {
+      final capturedImage = await liveProvider.captureStillImage();
 
-    if (!context.mounted) {
-      return;
-    }
-
-    if (capturedImage == null) {
-      await liveProvider.resumeLiveDetection();
       if (!context.mounted) {
         return;
       }
-      _showMessage(
-        context,
-        liveProvider.captureErrorMessage ?? 'Unable to capture image.',
-      );
-      return;
-    }
 
-    final success = await detectionProvider.scanFile(capturedImage);
-    if (!context.mounted) {
-      return;
-    }
+      if (capturedImage == null) {
+        if (!context.mounted) {
+          return;
+        }
+        _showMessage(
+          context,
+          liveProvider.captureErrorMessage ?? 'Unable to capture image.',
+        );
+        return;
+      }
 
-    if (!success) {
-      await liveProvider.resumeLiveDetection();
+      final success = await detectionProvider.scanFile(capturedImage);
       if (!context.mounted) {
         return;
       }
-      _showMessage(
-        context,
-        detectionProvider.errorMessage ??
-            'Captured image could not be analyzed.',
-      );
-      return;
-    }
 
-    await Navigator.of(
-      context,
-    ).push(fadeRoute(const ResultScreen(returnToLiveCamera: true)));
-    if (context.mounted) {
-      await context.read<LiveCameraProvider>().resumeLiveDetection();
+      if (!success) {
+        if (!context.mounted) {
+          return;
+        }
+        _showMessage(
+          context,
+          detectionProvider.errorMessage ??
+              'Captured image could not be analyzed.',
+        );
+        return;
+      }
+
+      await Navigator.of(
+        context,
+      ).push(fadeRoute(const ResultScreen(returnToLiveCamera: true)));
+    } finally {
+      // The preview's context may be replaced during a lifecycle interruption.
+      // Release the capture pause even then; the provider guards its own disposal.
+      await liveProvider.resumeLiveDetection();
     }
   }
 
