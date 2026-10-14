@@ -29,8 +29,10 @@ The app expects a YOLOv8 segmentation TFLite model with:
 - output 0: `[1, 39, 8400] float32`
 - mask prototypes: `[1, 32, 160, 160]` or `[1, 160, 160, 32] float32`
 
-The current `best.tflite` uses channel-first input and prototypes. Both live
-camera frames and capture/gallery images use the same `ModelService`, which
+The bundled model is restored from `revisionmodel.tflite` for an Android
+comparison release. It uses channel-last input and prototypes. Its SHA-256 is
+`c4f3c58c3351191603630592ecf504948baf6c64be92fd2b43c459a5663af2eb`.
+Both live camera frames and capture/gallery images use the same `ModelService`, which
 reads the tensor signature to choose the correct layout. Images are letterboxed
 to 640x640 with fill 114, packed as RGB float32 / 255, and boxes are decoded
 from normalized coordinates. Prototype output order is identified by shape.
@@ -42,6 +44,20 @@ The photo and live confidence thresholds are both 0.45; these
 conservative settings can miss small or difficult fruits and should be checked
 on independent phone images. Mask support requires at least four prototype
 pixels and 1% of the candidate crop, followed by validation after smoothing.
+
+This rollback is a test release, not a confirmed fix for real-world accuracy.
+Direct TFLite testing of the supplied field photo produced no detections with
+either this revision or the newer `best.tflite`. The current Flutter pipeline
+also preserves detections and masks on sampled validation images. Broader
+field-photo validation is required before choosing the final model.
+
+For inspecting a candidate model outside Flutter, `tool/diagnose_model.py`
+reports actual tensor values, class scores, and image normalization. It needs
+Python with `ai-edge-litert`, `numpy`, and `Pillow` installed:
+
+```text
+python tool/diagnose_model.py --model assets/model/model.tflite --image path/to/photo.jpg
+```
 
 ## Run Locally
 
