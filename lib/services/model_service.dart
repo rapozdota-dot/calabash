@@ -19,6 +19,25 @@ class ModelDetectionResult {
   final ModelPipelineTimings timings;
 }
 
+/// Photo acquisition/worker setup is separate from the shared model-stage timings.
+class PhotoDetectionResult {
+  const PhotoDetectionResult({
+    required this.modelResult,
+    required this.imageWidth,
+    required this.imageHeight,
+    this.fileReadMicros,
+    this.decodeMicros,
+    this.modelInitializationMicros,
+  });
+
+  final ModelDetectionResult modelResult;
+  final int imageWidth;
+  final int imageHeight;
+  final int? fileReadMicros;
+  final int? decodeMicros;
+  final int? modelInitializationMicros;
+}
+
 /// Stage durations in microseconds, used to locate mobile performance bottlenecks.
 class ModelPipelineTimings {
   const ModelPipelineTimings({
@@ -151,6 +170,11 @@ class ModelService {
   /// Exposes the selected delegate and thread settings for diagnostics.
   TfliteBackendConfig get backendConfig => _backendConfig;
 
+  String get photoConfigurationDescription =>
+      'YOLOv8n-seg;input=${AppConstants.modelInputSize};'
+      'confidence=$_confidenceThreshold;iou=${AppConstants.iouThreshold};'
+      'max_detections=$_maxDetections;CPU;threads=2;interpreter=new_per_photo';
+
   /// Enables detailed tensor/candidate logs only in debug builds when explicitly switched on.
   bool get _shouldVerboseLog => kDebugMode && _enableVerboseModelLogs;
 
@@ -276,6 +300,18 @@ class ModelService {
   /// Keeps JPEG decoding, tensor filling, inference, and masks off the UI thread.
   /// A photo worker owns its interpreter; native handles are never shared across isolates.
   Future<List<Detection>> detectFruits(File imageFile) async {
+    final result = await _detectPhoto(imageFile, collectMetrics: false);
+    return result.modelResult.detections;
+  }
+
+  /// Preserves the photo worker and detector, retaining their existing stage timings.
+  Future<PhotoDetectionResult> detectFruitsWithMetrics(File imageFile) =>
+      _detectPhoto(imageFile, collectMetrics: true);
+
+  Future<PhotoDetectionResult> _detectPhoto(
+    File imageFile, {
+    required bool collectMetrics,
+  }) async {
     final bytes = _photoModelBytes ??=
         _modelBuffer ??
         Uint8List.sublistView(
@@ -286,12 +322,20 @@ class ModelService {
       path: imageFile.path,
       threshold: _confidenceThreshold,
       limit: _maxDetections,
+      collectMetrics: collectMetrics,
     ));
   }
 
   /// Uses the same parser and preprocessing as live frames, with deterministic CPU inference.
-  static Future<List<Detection>> _inferPhoto(
-    ({Uint8List bytes, String path, double threshold, int limit}) request,
+  static Future<PhotoDetectionResult> _inferPhoto(
+    ({
+      Uint8List bytes,
+      String path,
+      double threshold,
+      int limit,
+      bool collectMetrics,
+    })
+    request,
   ) async {
     final service = ModelService(
       modelBuffer: request.bytes,
@@ -299,8 +343,28 @@ class ModelService {
       maxDetections: request.limit,
     );
     try {
-      final image = await service._decodeImageFile(File(request.path));
-      return await service.detectFruitsFromImage(image);
+      final readTimer = request.collectMetrics ? (Stopwatch()..start()) : null;
+      final bytes = await File(request.path).readAsBytes();
+      readTimer?.stop();
+      final decodeTimer = request.collectMetrics
+          ? (Stopwatch()..start())
+          : null;
+      final image = service._decodeImageBytes(bytes);
+      decodeTimer?.stop();
+      final initializationTimer = request.collectMetrics
+          ? (Stopwatch()..start())
+          : null;
+      if (initializationTimer != null) await service.loadModel();
+      initializationTimer?.stop();
+      final result = await service.detectFruitsFromImageWithMetrics(image);
+      return PhotoDetectionResult(
+        modelResult: result,
+        imageWidth: image.width,
+        imageHeight: image.height,
+        fileReadMicros: readTimer?.elapsedMicroseconds,
+        decodeMicros: decodeTimer?.elapsedMicroseconds,
+        modelInitializationMicros: initializationTimer?.elapsedMicroseconds,
+      );
     } finally {
       service.dispose();
     }
@@ -338,8 +402,7 @@ class ModelService {
 
   /// Reads and decodes the photo, then bakes EXIF orientation into its pixels.
   /// Correct orientation is needed before resizing and mapping overlays back to the photo.
-  Future<img.Image> _decodeImageFile(File imageFile) async {
-    final imageBytes = await imageFile.readAsBytes();
+  img.Image _decodeImageBytes(Uint8List imageBytes) {
     final decodedImage = img.decodeImage(imageBytes);
     if (decodedImage == null) {
       throw StateError('Unable to decode image for inference.');

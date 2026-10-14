@@ -32,6 +32,16 @@ The app expects a YOLOv8 segmentation TFLite model with:
 The bundled model is `latest14_10.tflite` (trained October 14, 2026).
 It uses channel-first input and prototypes. Its SHA-256 is
 `2e377b3b81edc3398d9d3ebf41f77dd7ad46d60a321f27ddc499a51ba9e68547`.
+Android and iOS bundle this same asset through `pubspec.yaml`; live camera,
+capture, and gallery scans use the shared inference pipeline. Updating this
+asset applies the model weights to both platforms without separate model copies.
+The export still exposes only `Immature`, `Mature`, and `Overmature`, with no
+separate `Non-calabash` class. Non-calabash rejection means that no calabash
+detection survives the confidence and mask checks. Negative/background training
+examples do not require another app label; the export metadata does not record
+which training examples were used. Validate rejection on independent images and
+both devices before claiming reliable non-calabash filtering.
+
 Both live camera frames and capture/gallery images use the same `ModelService`, which
 reads the tensor signature to choose the correct layout. Images are letterboxed
 to 640x640 with fill 114, packed as RGB float32 / 255, and boxes are decoded
@@ -123,6 +133,174 @@ Debug builds print an aggregated `LIVE PERF` report about once per second with
 camera FPS, AI FPS, frame counts, replacement/drop counts, pending frame count,
 conversion, preprocessing, TFLite inference, post-processing, mask, total AI,
 and result-age timings.
+
+## iOS research performance CSV recording
+
+Performance recording is opt-in with `--dart-define=CALABASH_PERF=true`.
+The `PerformanceProbe` flag/timer approach from
+`codex/app-performance-measurements` is adapted here for persistent CSV;
+the existing `ModelPipelineTimings` and live conversion timers are reused.
+No detector thresholds, model weights, frame scheduling or application screens
+are changed. With the flag disabled, no performance files or additional
+acquisition/queue timers are created. This measures **YOLOv8n-seg only**;
+MobileNetV3 is not an implemented stage.
+
+### Measurement boundaries
+
+All new elapsed durations use `Stopwatch`; UTC wall-clock timestamps only label
+samples. Durations are stored in milliseconds with microsecond resolution.
+
+| CSV measurement | Boundary |
+| --- | --- |
+| Live `complete_processing_ms` | Dart camera callback receipt through prepared detection/tracking state, before listener notification/rendering. Includes pending-frame waiting. This is not sensor exposure-to-display latency. |
+| Live `queue_ms` | Receipt through entry into `_processFrame()`. Includes the existing busy/cadence wait. |
+| Live `processing_ms` | Complete elapsed time minus measured queue time. |
+| Live `preprocess_ms` | Existing RGB conversion + orientation + model letterbox/tensor-fill durations. Materialization/transport overhead remains in complete processing. |
+| Gallery `complete_processing_ms` / `processing_ms` | Selected file returned by the picker through prepared detections and harvest recommendation. Includes worker startup, file read/decode, per-photo model loading, inference, postprocessing, disposal and return transport. Excludes manual selection and result-screen rendering. |
+| `file_read_ms` | Worker file read start through bytes available. |
+| `decode_ms` | Image decoding start through EXIF orientation baked into pixels. |
+| Gallery `model_initialization_ms` | Photo worker `loadModel()` start through interpreter/signature validation completed. The current photo path creates an interpreter for every photo. |
+| Gallery `preprocess_ms` | Existing letterbox resize and normalized tensor preparation. |
+| `yolo_inference_ms` | Existing `_runInference()` stopwatch around TFLite `runForMultipleInputs()`. Includes runtime tensor input/output handling; excludes decoding, initialization, image preprocessing and segmentation postprocessing. It is not a native-invoke-only metric. |
+| `postprocess_ms` | Candidate parsing through NMS, mask reconstruction/filtering and final detection objects. |
+| `result_preparation_ms` | Live tracking/state preparation or gallery counts/recommendation preparation. |
+| `processed_fps` | Reciprocal elapsed interval between completed live results. First completion and first completion after a pause have no FPS sample. Summary throughput is interval sample count divided by summed interval seconds; it is not camera sensor FPS. |
+
+The first completed live frame after each worker initialization and the first
+successful Gallery/Capture image of each app session are marked `warm_up=true`.
+They remain in raw data but are excluded from averages. Backend-selection
+neutral-image benchmarks are not research samples, and no extra inference or
+automatically repeated gallery scan is introduced. Later gallery images still
+include their own interpreter initialization; they are not persistent-worker
+warm runs.
+
+`Capture` labels shutter photos separately from continuous `Live` frames and
+`Gallery` images. Empty/no-fruit results count as successful processing, not as
+accuracy evidence. Picker cancellation produces no processing sample.
+
+### Files, fields and calculations
+
+Files are written asynchronously in approximately one-second batches after
+the producing sample's processing stopwatch has stopped. Detection never waits
+for CSV writes. Background/inactive lifecycle events request a flush, including
+late results returned while backgrounded. Recording overhead still requires
+physical-device evaluation; no zero-overhead claim is made.
+
+Storage is the app's Documents directory under `calabash_performance/`:
+
+```text
+calabash_performance_<UTC-date>_<session-id>_raw.csv
+calabash_performance_<UTC-date>_<session-id>_summary.csv
+```
+
+Each launch has a new timestamp/random session ID. Existing session files are
+retained across normal restarts. Raw rows append; the paired summary is refreshed
+from successfully written rows. Export both files before uninstalling the app.
+Abrupt termination can lose a not-yet-flushed batch; background the app normally
+and allow the flush before exporting. Raw data is authoritative if a summary is
+out of date.
+
+Raw fields include session/measurement IDs, UTC time, platform/available OS and
+processor information, source revision, build number, model SHA-256, scan method,
+runtime/threshold configuration, outcome, image dimensions, frame/detection
+counts, all timing columns above, FPS interval, warm-up status, separate
+processing/inference inclusion flags, exclusion reason and successful-run count.
+Unavailable values are blank, never estimated. An optional
+`CALABASH_PERF_DEVICE` define supplies a manually identified device label;
+hardware model/RAM are not automatically detected or hardcoded.
+
+The summary contains separate Live, Gallery and Capture rows: successful,
+valid/excluded/warm-up/error/stale/invalidated counts; complete-processing
+mean/minimum/maximum; processing mean excluding queue time; inference mean;
+processed throughput; separate processing/inference percentages within 3,000 ms;
+and the average-inference requirement verdict. The threshold is inclusive.
+The verdict is `NOT_ENOUGH_DATA` until 30 valid **inference** samples exist.
+Collect at least 30 valid prepared-result samples per requested method as well;
+warm-ups do not count toward that target. There is no 30-sample upper limit.
+
+Full processing averages include only successful prepared results with valid
+timings. Inference averages additionally include completed model runs whose
+result is `stale` or `invalidated`, preventing freshness policy from censoring
+slow executions. Failed/missing/invalid timings and warm-ups are excluded.
+Always report outcome counts beside averages; a good model-only mean does not
+establish responsive complete application processing.
+
+CSV strings are quoted/escaped and numeric units are milliseconds. A schematic
+raw row is `<session>,<measurement>,<UTC-time>,...,<actual elapsed values>,...`;
+no example numbers in tests or documentation are actual research results.
+If storage is unavailable, recording errors are logged without failing
+detection. The retry buffer is bounded; overflow is counted as
+`dropped_recordings` and prevents a normal research verdict.
+
+### Build and install through Windows/AltStore
+
+1. Review, commit and push these changes on the branch intended for measurement.
+   The existing published `ios-9` IPA predates this instrumentation. Do not use
+   its measurements to characterize this new source/model export.
+2. On GitHub, open **Actions → Build Calabash iOS IPA → Run workflow**.
+3. Select that pushed branch, enable **performance_recording**, and run it.
+   Its default is false. The workflow builds a release IPA with
+   `CALABASH_PERF=true`, embeds source/build/model identifiers in CSV metadata,
+   and preserves the existing unsigned IPA packaging and release workflow.
+   If the web form has not picked up the new input, use an authenticated GitHub
+   CLI to dispatch the updated branch explicitly:
+
+   ```bash
+   gh workflow run build-ios.yml --ref <pushed-branch> -f performance_recording=true
+   ```
+
+4. Wait for analysis, tests and the macOS build to succeed. Download
+   `Calabash-unsigned.ipa` and `Calabash-source-info.txt` from that exact run or
+   its `ios-<run-number>` release. Check commit, build number, model checksum and
+   `Performance recording: true` in the source-info file.
+5. Keep AltServer running on Windows and connect the existing trusted iPhone
+   through USB or the supported same-network setup. Transfer the IPA to iPhone
+   Files, then import it using AltStore Classic's **My Apps → +** file picker.
+   Alternatively, Windows AltServer exposes **Sideload .ipa…** by holding Shift
+   while clicking its tray icon. AltStore/AltServer handles signing; this
+   workflow's unsigned IPA is not directly installable by itself.
+6. Open the installed build, collect live frames and manually select gallery
+   images. No additional performance panel or new detection controls appear.
+
+Official installation/connection guidance:
+[AltServer](https://faq.altstore.io/altstore-classic/altserver) and
+[AltServer sideload menu](https://faq.altstore.io/release-notes/altserver).
+
+The equivalent build command on a machine with macOS/Xcode is:
+
+```bash
+flutter build ios --release --no-codesign --build-number=<build-number> \
+  --dart-define=CALABASH_PERF=true \
+  --dart-define=CALABASH_SOURCE_REVISION=<actual-commit-sha> \
+  --dart-define=CALABASH_BUILD_NUMBER=<build-number> \
+  --dart-define=CALABASH_MODEL_SHA256=<actual-model-sha256>
+```
+
+Windows development uses the GitHub macOS workflow instead of a local iOS build.
+
+### Export and physical-device acceptance
+
+After collection, background the app normally and allow pending writes to
+finish. Open **Files → Browse → On My iPhone → Calabash Maturity Detection →
+calabash_performance** (the displayed folder name can vary). Copy/share matching
+raw and summary CSVs to your research storage, together with source-info.
+`UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace` enable this access.
+
+On the physical iPhone, verify the folder is visible, values are recorded by
+the release build, counts reach 30 valid samples per method, prior session files
+survive a normal restart, camera/gallery/shutter still work, and recording has
+acceptable overhead. Compare CSV source/model identifiers to the downloaded
+artifact. Local automated tests validate synthetic calculations, CSV structure,
+persistence and provider control flow; they do not establish measured iPhone
+performance or satisfaction of the 3,000 ms requirement.
+
+Validation commands:
+
+```bash
+flutter analyze
+flutter test
+flutter test --dart-define=CALABASH_PERF=true test/performance_probe_test.dart
+```
 
 ## Build APK
 

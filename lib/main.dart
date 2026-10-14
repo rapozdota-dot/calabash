@@ -5,6 +5,7 @@ import 'package:calabash_maturity_detection/screens/branded_splash_screen.dart';
 import 'package:calabash_maturity_detection/screens/home_screen.dart';
 import 'package:calabash_maturity_detection/services/image_service.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
+import 'package:calabash_maturity_detection/services/performance_probe.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -12,6 +13,10 @@ import 'package:provider/provider.dart';
 
 /// Starts Flutter and mounts the app; model initialization begins in its provider.
 void main() {
+  if (PerformanceProbe.buildEnabled) {
+    WidgetsFlutterBinding.ensureInitialized();
+    PerformanceProbe.instance.attachLifecycle();
+  }
   runApp(const CalabashApp());
 }
 

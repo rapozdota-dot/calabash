@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/services/image_service.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
+import 'package:calabash_maturity_detection/services/performance_probe.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -10,11 +11,15 @@ class DetectionProvider extends ChangeNotifier {
   DetectionProvider({
     required ModelService modelService,
     required ImageService imageService,
+    PerformanceProbe? performanceProbe,
   }) : _modelService = modelService,
-       _imageService = imageService;
+       _imageService = imageService,
+       _performanceProbe = performanceProbe ?? PerformanceProbe.instance;
 
   final ModelService _modelService;
   final ImageService _imageService;
+  final PerformanceProbe _performanceProbe;
+  PerformanceScanMethod _scanMethod = PerformanceScanMethod.capture;
 
   bool _isInitializing = false;
   bool _isAnalyzing = false;
@@ -102,8 +107,14 @@ class DetectionProvider extends ChangeNotifier {
     notifyListeners();
 
     File? pickedImage;
+    Stopwatch? fileAvailableTimer;
+    DateTime? fileAvailableTimestamp;
     try {
       pickedImage = await _imageService.pickImage(source: source);
+      if (pickedImage != null && _performanceProbe.enabled) {
+        fileAvailableTimer = Stopwatch()..start();
+        fileAvailableTimestamp = DateTime.now();
+      }
     } catch (error) {
       if (!_isDisposed && generation == _scanGeneration) {
         _errorMessage = 'Unable to open the image picker. Please try again.';
@@ -121,21 +132,45 @@ class DetectionProvider extends ChangeNotifier {
       return false;
     }
 
-    return scanFile(pickedImage);
+    return scanFile(
+      pickedImage,
+      method: source == ImageSource.gallery
+          ? PerformanceScanMethod.gallery
+          : PerformanceScanMethod.capture,
+      measurementTimer: fileAvailableTimer,
+      measurementTimestamp: fileAvailableTimestamp,
+    );
   }
 
   /// Selects a captured or picked photo, clears old detections, and starts analysis.
-  Future<bool> scanFile(File imageFile) async {
+  Future<bool> scanFile(
+    File imageFile, {
+    PerformanceScanMethod method = PerformanceScanMethod.capture,
+    Stopwatch? measurementTimer,
+    DateTime? measurementTimestamp,
+  }) async {
     if (isBusy || _isDisposed) return false;
 
+    final timer =
+        measurementTimer ??
+        (_performanceProbe.enabled ? (Stopwatch()..start()) : null);
+    final timestamp =
+        measurementTimestamp ?? (timer == null ? null : DateTime.now());
+    _scanMethod = method;
     _selectedImage = imageFile;
     _detections = [];
-    return analyzeSelectedImage();
+    return analyzeSelectedImage(
+      measurementTimer: timer,
+      measurementTimestamp: timestamp,
+    );
   }
 
   /// Runs the photo pipeline, updates detections and guidance, and reports errors.
   /// The finally block always clears the busy state and refreshes listeners.
-  Future<bool> analyzeSelectedImage() async {
+  Future<bool> analyzeSelectedImage({
+    Stopwatch? measurementTimer,
+    DateTime? measurementTimestamp,
+  }) async {
     if (isBusy || _isDisposed) return false;
     if (_selectedImage == null) {
       _errorMessage = 'Please capture or choose an image first.';
@@ -143,6 +178,15 @@ class DetectionProvider extends ChangeNotifier {
       return false;
     }
 
+    final timer =
+        measurementTimer ??
+        (_performanceProbe.enabled ? (Stopwatch()..start()) : null);
+    final timestamp =
+        measurementTimestamp ?? (timer == null ? null : DateTime.now());
+    final method = _scanMethod;
+    PhotoDetectionResult? measuredResult;
+    int? resultPreparationMicros;
+    var outcome = 'error';
     _isAnalyzing = true;
     final generation = ++_scanGeneration;
     final image = _selectedImage!;
@@ -152,10 +196,20 @@ class DetectionProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final detections = await _modelService.detectFruits(image);
+      final List<Detection> detections;
+      if (timer == null) {
+        detections = await _modelService.detectFruits(image);
+      } else {
+        measuredResult = await _modelService.detectFruitsWithMetrics(image);
+        detections = measuredResult.modelResult.detections;
+      }
       // Back/clear/dispose invalidates the result, not the native computation.
       // Keep busy until computation ends to prevent overlapping photo workers.
-      if (_isDisposed || generation != _scanGeneration) return false;
+      if (_isDisposed || generation != _scanGeneration) {
+        outcome = 'invalidated';
+        return false;
+      }
+      final preparationTimer = timer == null ? null : (Stopwatch()..start());
       _detections = detections;
       // Recommendation logic is intentionally simple and explainable for field use.
       _recommendation = _buildRecommendation(
@@ -163,6 +217,9 @@ class DetectionProvider extends ChangeNotifier {
         immature: immatureCount,
         overmature: overmatureCount,
       );
+      preparationTimer?.stop();
+      resultPreparationMicros = preparationTimer?.elapsedMicroseconds;
+      outcome = 'success';
       return true;
     } catch (error) {
       if (!_isDisposed && generation == _scanGeneration) {
@@ -171,6 +228,32 @@ class DetectionProvider extends ChangeNotifier {
       }
       return false;
     } finally {
+      timer?.stop();
+      if (timer != null) {
+        final stages = measuredResult?.modelResult.timings;
+        _performanceProbe.record(
+          PerformanceMeasurement(
+            method: method,
+            outcome: outcome,
+            warmUp: _performanceProbe.summaryFor(method).successfulCount == 0,
+            timestamp: timestamp,
+            completeMicros: timer.elapsedMicroseconds,
+            processingMicros: timer.elapsedMicroseconds,
+            preprocessMicros: stages?.preprocessMicros,
+            inferenceMicros: stages?.inferenceMicros,
+            postprocessMicros: stages?.postprocessMicros,
+            fileReadMicros: measuredResult?.fileReadMicros,
+            decodeMicros: measuredResult?.decodeMicros,
+            modelInitializationMicros:
+                measuredResult?.modelInitializationMicros,
+            resultPreparationMicros: resultPreparationMicros,
+            imageWidth: measuredResult?.imageWidth,
+            imageHeight: measuredResult?.imageHeight,
+            detectionCount: measuredResult?.modelResult.detections.length,
+            modelConfiguration: _modelService.photoConfigurationDescription,
+          ),
+        );
+      }
       _isAnalyzing = false;
       notifyListeners();
     }
