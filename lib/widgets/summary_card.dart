@@ -16,6 +16,7 @@ class SummaryCard extends StatelessWidget {
   final int immature;
   final int overmature;
 
+  /// Displays total fruit count and stage counts in a compact summary card.
   @override
   Widget build(BuildContext context) {
     final fruitLabel = total == 1 ? 'fruit' : 'fruits';
@@ -71,6 +72,7 @@ class SummaryCard extends StatelessWidget {
     );
   }
 
+  /// Builds a colored stage/count chip using the shared summary styling.
   Widget _pill(String label, int value, Color color) {
     return DecoratedBox(
       decoration: BoxDecoration(

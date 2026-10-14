@@ -7,6 +7,9 @@ import 'package:flutter/painting.dart';
 class SegmentationPostprocessor {
   SegmentationPostprocessor._();
 
+  /// Runs class-aware non-maximum suppression: consider highest confidence first.
+  /// Suppress a box only when a kept box of the same class overlaps above the IoU limit;
+  /// stop at maxDetections. Different maturity classes are not merged by this step.
   static List<T> suppressDuplicates<T>(
     List<T> candidates, {
     required Rect Function(T) boxOf,
@@ -34,6 +37,7 @@ class SegmentationPostprocessor {
     return kept;
   }
 
+  /// Calculates intersection area divided by union area; disjoint/degenerate boxes return zero.
   static double intersectionOverUnion(Rect a, Rect b) {
     final width = math.max(
       0.0,
@@ -48,6 +52,7 @@ class SegmentationPostprocessor {
     return union > 0 ? intersection / union : 0;
   }
 
+  /// Maps 640-space box corners onto the lower-resolution prototype grid and clips the crop.
   static ({int left, int top, int right, int bottom}) prototypeRegion(
     Rect modelBox,
     int modelSize,
@@ -60,6 +65,12 @@ class SegmentationPostprocessor {
     bottom: (modelBox.bottom * height / modelSize).ceil().clamp(0, height),
   );
 
+  /// Reconstructs each pixel's logit as sum(coefficient[c] * prototype[c, pixel]).
+  ///
+  /// Prototypes contain 32 shared learned planes; each fruit's coefficients
+  /// select their weighted combination. These coefficients are not class scores.
+  /// A logit greater than zero is equivalent to sigmoid(logit) greater than 0.5,
+  /// so binary thresholding can avoid computing sigmoid for every pixel.
   /// Only the crop is displayed, so avoid the 32-channel dot product elsewhere.
   static void reconstructMask({
     required Float32List coefficients,
@@ -94,6 +105,8 @@ class SegmentationPostprocessor {
     }
   }
 
+  /// Requires enough finite foreground logits inside the fruit's prototype crop.
+  /// Both an absolute pixel minimum and a crop-area fraction guard against tiny unsupported masks.
   static bool hasMaskSupport({
     required Float32List logits,
     required Rect modelBox,
@@ -119,6 +132,8 @@ class SegmentationPostprocessor {
     return false;
   }
 
+  /// Uses a 3x3 neighbor vote to reduce isolated pixels and small holes in the binary display mask.
+  /// This cosmetic cleanup does not change class predictions or confidence.
   static Uint8List smoothMask(Uint8List source, int width, int height) {
     final result = Uint8List(source.length);
     for (var y = 0; y < height; y++) {

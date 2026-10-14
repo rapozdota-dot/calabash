@@ -16,6 +16,7 @@ import 'package:provider/provider.dart';
 class LiveCameraScreen extends StatelessWidget {
   const LiveCameraScreen({super.key});
 
+  /// Owns a camera-session provider scoped to this screen and starts initialization.
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
@@ -28,6 +29,7 @@ class LiveCameraScreen extends StatelessWidget {
 class _LiveCameraView extends StatelessWidget {
   const _LiveCameraView();
 
+  /// Displays the live camera scaffold and observes only session status/errors.
   @override
   Widget build(BuildContext context) {
     final status = context.select<LiveCameraProvider, LiveCameraStatus>(
@@ -46,6 +48,7 @@ class _LiveCameraView extends StatelessWidget {
     );
   }
 
+  /// Chooses loading, permission recovery, camera error, or preview content.
   Widget _bodyFor(
     BuildContext context,
     LiveCameraStatus status,
@@ -87,6 +90,7 @@ class _LiveCameraView extends StatelessWidget {
 class _TorchAction extends StatelessWidget {
   const _TorchAction();
 
+  /// Builds a flashlight control that updates only when its selected state changes.
   @override
   Widget build(BuildContext context) {
     final state = context.select<LiveCameraProvider, _TorchButtonState>(
@@ -109,6 +113,7 @@ class _TorchAction extends StatelessWidget {
     );
   }
 
+  /// Requests a torch change and shows a snackbar if the hardware cannot apply it.
   Future<void> _toggleTorch(BuildContext context) async {
     final provider = context.read<LiveCameraProvider>();
     final success = await provider.toggleTorch();
@@ -131,6 +136,7 @@ class _TorchAction extends StatelessWidget {
 class _LivePreview extends StatelessWidget {
   const _LivePreview();
 
+  /// Fits camera pixels and overlays into the same cover rectangle to preserve alignment.
   @override
   Widget build(BuildContext context) {
     final controller = context.select<LiveCameraProvider, CameraController?>(
@@ -176,6 +182,7 @@ class _LivePreview extends StatelessWidget {
     );
   }
 
+  /// Determines preview dimensions from camera orientation before inference supplies a frame size.
   Size? _previewSourceSize(CameraController controller) {
     final previewSize = controller.value.previewSize;
     if (previewSize == null) {
@@ -191,6 +198,7 @@ class _LivePreview extends StatelessWidget {
         : Size(previewSize.width, previewSize.height);
   }
 
+  /// Scales the source proportionally to fill the viewport and centers any cropped excess.
   Rect _coverRect(Size sourceSize, Size containerSize) {
     if (sourceSize.width <= 0 ||
         sourceSize.height <= 0 ||
@@ -217,6 +225,8 @@ class _LivePreview extends StatelessWidget {
 class _FocusPreview extends StatefulWidget {
   const _FocusPreview({required this.controller});
   final CameraController controller;
+
+  /// Creates state for the temporary tap-to-focus indicator.
   @override
   State<_FocusPreview> createState() => _FocusPreviewState();
 }
@@ -224,6 +234,9 @@ class _FocusPreview extends StatefulWidget {
 class _FocusPreviewState extends State<_FocusPreview> {
   Offset? _point;
   int _request = 0;
+
+  /// Converts taps to normalized focus/exposure points and clears the indicator afterward.
+  /// A request ID prevents older tap responses from overriding newer taps.
   Future<void> _focus(Offset point, Size size) async {
     final request = ++_request;
     setState(() => _point = point);
@@ -244,6 +257,7 @@ class _FocusPreviewState extends State<_FocusPreview> {
     }
   }
 
+  /// Shows the native preview with tap handling and an optional focus marker.
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) => GestureDetector(
@@ -280,6 +294,7 @@ class _LiveDetectionOverlay extends StatelessWidget {
 
   final Rect previewRect;
 
+  /// Draws confirmed tracks in preview coordinates, keyed by stable track ID.
   @override
   Widget build(BuildContext context) {
     final state = context.select<LiveCameraProvider, _LiveOverlayState>(
@@ -317,7 +332,9 @@ class _LiveDetectionOverlay extends StatelessWidget {
     );
   }
 
+  /// Uses cautious wording for weak predictions instead of presenting them as certain.
   String _labelFor(int number, LiveDetection detection) {
+    if (detection.maturityUncertain) return '#$number Calabash';
     return switch (detection.confidenceTier) {
       LiveConfidenceTier.normal =>
         '#$number ${detection.detection.maturityClass.label}',
@@ -327,7 +344,9 @@ class _LiveDetectionOverlay extends StatelessWidget {
     };
   }
 
+  /// Shows confidence or a camera-positioning hint according to prediction strength.
   String _subtitleFor(LiveDetection detection) {
+    if (detection.maturityUncertain) return 'Maturity uncertain';
     return switch (detection.confidenceTier) {
       LiveConfidenceTier.normal =>
         '${(detection.detection.confidence * 100).toStringAsFixed(0)}%',
@@ -336,7 +355,9 @@ class _LiveDetectionOverlay extends StatelessWidget {
     };
   }
 
+  /// Uses maturity colors for normal-confidence results and caution colors otherwise.
   Color _colorFor(LiveDetection detection) {
+    if (detection.maturityUncertain) return AppConstants.unknownMaturityColor;
     return switch (detection.confidenceTier) {
       LiveConfidenceTier.normal => detection.detection.maturityClass.color,
       LiveConfidenceTier.weak => AppConstants.unknownMaturityColor,
@@ -348,6 +369,7 @@ class _LiveDetectionOverlay extends StatelessWidget {
 class _ReadinessIndicatorHost extends StatelessWidget {
   const _ReadinessIndicatorHost();
 
+  /// Observes just readiness and first-frame state to limit UI rebuilds.
   @override
   Widget build(BuildContext context) {
     final status = context.select<LiveCameraProvider, LiveStabilityStatus>(
@@ -375,6 +397,7 @@ class _ReadinessIndicator extends StatelessWidget {
   final LiveStabilityStatus status;
   final bool hasProcessed;
 
+  /// Displays looking, no-calabash, hold-steady, or capture-ready guidance.
   @override
   Widget build(BuildContext context) {
     final color = switch (status) {
@@ -443,6 +466,7 @@ class _ReadinessIndicator extends StatelessWidget {
 class _LiveCaptureControls extends StatelessWidget {
   const _LiveCaptureControls();
 
+  /// Enables the shutter only when both live capture and photo analysis are idle.
   @override
   Widget build(BuildContext context) {
     final state = context.select<LiveCameraProvider, _CaptureButtonState>(
@@ -489,54 +513,58 @@ class _LiveCaptureControls extends StatelessWidget {
     );
   }
 
+  /// Captures a full photo, analyzes it, opens results, and resumes live detection afterward.
+  /// Failures restore streaming and show a message without opening a misleading result.
   Future<void> _captureAndOpenResult(BuildContext context) async {
     HapticFeedback.lightImpact();
     final liveProvider = context.read<LiveCameraProvider>();
     final detectionProvider = context.read<DetectionProvider>();
-    final capturedImage = await liveProvider.captureStillImage();
+    try {
+      final capturedImage = await liveProvider.captureStillImage();
 
-    if (!context.mounted) {
-      return;
-    }
-
-    if (capturedImage == null) {
-      await liveProvider.resumeLiveDetection();
       if (!context.mounted) {
         return;
       }
-      _showMessage(
-        context,
-        liveProvider.captureErrorMessage ?? 'Unable to capture image.',
-      );
-      return;
-    }
 
-    final success = await detectionProvider.scanFile(capturedImage);
-    if (!context.mounted) {
-      return;
-    }
-
-    if (!success) {
-      await liveProvider.resumeLiveDetection();
-      if (!context.mounted) {
+      if (capturedImage == null) {
+        if (!context.mounted) {
+          return;
+        }
+        _showMessage(
+          context,
+          liveProvider.captureErrorMessage ?? 'Unable to capture image.',
+        );
         return;
       }
-      _showMessage(
-        context,
-        detectionProvider.errorMessage ??
-            'Captured image could not be analyzed.',
-      );
-      return;
-    }
 
-    await Navigator.of(
-      context,
-    ).push(fadeRoute(const ResultScreen(returnToLiveCamera: true)));
-    if (context.mounted) {
-      await context.read<LiveCameraProvider>().resumeLiveDetection();
+      final success = await detectionProvider.scanFile(capturedImage);
+      if (!context.mounted || ModalRoute.of(context)?.isCurrent != true) {
+        return;
+      }
+
+      if (!success) {
+        if (!context.mounted) {
+          return;
+        }
+        _showMessage(
+          context,
+          detectionProvider.errorMessage ??
+              'Captured image could not be analyzed.',
+        );
+        return;
+      }
+
+      await Navigator.of(
+        context,
+      ).push(fadeRoute(const ResultScreen(returnToLiveCamera: true)));
+    } finally {
+      // The preview's context may be replaced during a lifecycle interruption.
+      // Release the capture pause even then; the provider guards its own disposal.
+      await liveProvider.resumeLiveDetection();
     }
   }
 
+  /// Shows a short floating snackbar for capture or analysis problems.
   void _showMessage(BuildContext context, String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -551,6 +579,7 @@ class _LiveCaptureControls extends StatelessWidget {
 class _CaptureProgressPill extends StatelessWidget {
   const _CaptureProgressPill();
 
+  /// Displays compact progress feedback while a captured photo is processed.
   @override
   Widget build(BuildContext context) {
     return DecoratedBox(
@@ -599,6 +628,7 @@ class _ShutterButton extends StatelessWidget {
   final bool isBusy;
   final VoidCallback onPressed;
 
+  /// Builds an accessible shutter button with explicit disabled and busy states.
   @override
   Widget build(BuildContext context) {
     return Semantics(
@@ -637,6 +667,7 @@ class _ShutterButton extends StatelessWidget {
 class _LiveStatusBarHost extends StatelessWidget {
   const _LiveStatusBarHost();
 
+  /// Observes only status-bar fields rather than rebuilding the full camera screen.
   @override
   Widget build(BuildContext context) {
     final state = context.select<LiveCameraProvider, _LiveStatusState>(
@@ -671,6 +702,7 @@ class _LiveOverlayState {
   final List<LiveDetection> detections;
   final bool shouldShowNoCalabash;
 
+  /// Compares selected overlay state so unrelated provider updates do not rebuild masks.
   @override
   bool operator ==(Object other) {
     return identical(this, other) ||
@@ -679,6 +711,7 @@ class _LiveOverlayState {
             other.shouldShowNoCalabash == shouldShowNoCalabash;
   }
 
+  /// Hashes the same fields used for overlay-state equality.
   @override
   int get hashCode =>
       Object.hash(identityHashCode(detections), shouldShowNoCalabash);
@@ -697,6 +730,7 @@ class _LiveStatusState {
   final String? errorMessage;
   final bool isSlow;
 
+  /// Compares status-bar fields to avoid rebuilding it for unrelated changes.
   @override
   bool operator ==(Object other) {
     return identical(this, other) ||
@@ -707,6 +741,7 @@ class _LiveStatusState {
             other.errorMessage == errorMessage;
   }
 
+  /// Hashes the same fields used for status-bar equality.
   @override
   int get hashCode =>
       Object.hash(isProcessing, hasDetections, errorMessage, isSlow);
@@ -721,6 +756,7 @@ class _CaptureButtonState {
   final bool isCameraReady;
   final bool isCaptureWorkflowActive;
 
+  /// Compares camera-readiness and capture-busy state for selective control rebuilds.
   @override
   bool operator ==(Object other) {
     return identical(this, other) ||
@@ -729,6 +765,7 @@ class _CaptureButtonState {
             other.isCaptureWorkflowActive == isCaptureWorkflowActive;
   }
 
+  /// Hashes the fields used for capture-button state equality.
   @override
   int get hashCode => Object.hash(isCameraReady, isCaptureWorkflowActive);
 }
@@ -744,6 +781,7 @@ class _TorchButtonState {
   final bool isTorchOn;
   final bool isSettingTorch;
 
+  /// Compares readiness, torch state, and toggle progress for selective rebuilds.
   @override
   bool operator ==(Object other) {
     return identical(this, other) ||
@@ -753,6 +791,7 @@ class _TorchButtonState {
             other.isSettingTorch == isSettingTorch;
   }
 
+  /// Hashes the fields used for torch-button state equality.
   @override
   int get hashCode => Object.hash(isCameraReady, isTorchOn, isSettingTorch);
 }
@@ -760,6 +799,7 @@ class _TorchButtonState {
 class _LiveLoadingState extends StatelessWidget {
   const _LiveLoadingState();
 
+  /// Shows camera-startup progress before the native preview is available.
   @override
   Widget build(BuildContext context) {
     return const Center(
@@ -791,6 +831,7 @@ class _PermissionMessage extends StatelessWidget {
   final String buttonLabel;
   final VoidCallback onPressed;
 
+  /// Displays a recoverable permission/error message with its corresponding action.
   @override
   Widget build(BuildContext context) {
     return Center(
@@ -830,6 +871,7 @@ class _LiveStatusBar extends StatelessWidget {
   final String? errorMessage;
   final bool isSlow;
 
+  /// Shows live-analysis feedback and errors without covering the whole preview.
   @override
   Widget build(BuildContext context) {
     final text =

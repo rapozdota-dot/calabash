@@ -6,6 +6,27 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('alternating maturity does not hide a repeatedly localized fruit', () {
+    final tracker = LiveDetectionTracker();
+    for (var i = 0; i < 8; i++) {
+      final result = tracker.update([
+        _detection(
+          left: 0.1,
+          top: 0.1,
+          maturityClass: i.isEven
+              ? MaturityClass.mature
+              : MaturityClass.overmature,
+        ),
+      ]);
+      if (i == 0) {
+        expect(result.detections, isEmpty);
+      } else {
+        expect(result.detections, hasLength(1));
+        expect(result.detections.single.maturityUncertain, isTrue);
+        expect(result.stabilityStatus, LiveStabilityStatus.holdSteady);
+      }
+    }
+  });
   test('photo-level confidence appears as tentative after confirmation', () {
     final tracker = LiveDetectionTracker();
     final candidate = _detection(left: 0.1, top: 0.1, confidence: 0.47);
@@ -163,7 +184,7 @@ void main() {
   });
 
   test(
-    'a conflicting tentative stage is not promoted to a confirmed label',
+    'repeated fruit stays visible while a conflicting stage is tentative',
     () {
       final tracker = LiveDetectionTracker();
       tracker.update([
@@ -174,16 +195,16 @@ void main() {
           maturityClass: MaturityClass.immature,
         ),
       ]);
-      expect(
-        tracker.update([_detection(left: 0.1, top: 0.1)]).detections,
-        isEmpty,
-      );
+      final tentative = tracker.update([_detection(left: 0.1, top: 0.1)]);
+      expect(tentative.detections.single.maturityUncertain, isTrue);
+      expect(tentative.stabilityStatus, LiveStabilityStatus.holdSteady);
       final result = tracker.update([_detection(left: 0.1, top: 0.1)]);
       expect(
         result.detections.single.detection.maturityClass,
         MaturityClass.mature,
       );
       expect(result.detections.single.detection.confidence, 0.92);
+      expect(result.detections.single.maturityUncertain, isFalse);
     },
   );
 

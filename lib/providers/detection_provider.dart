@@ -20,6 +20,8 @@ class DetectionProvider extends ChangeNotifier {
   bool _isAnalyzing = false;
   bool _isPickingImage = false;
   bool _didInitialize = false;
+  bool _isDisposed = false;
+  int _scanGeneration = 0;
 
   String? _errorMessage;
   String _recommendation = 'Run a scan to get a harvest recommendation.';
@@ -27,39 +29,61 @@ class DetectionProvider extends ChangeNotifier {
   File? _selectedImage;
   List<Detection> _detections = [];
 
+  /// Exposes model-loading progress to the startup screen.
   bool get isInitializing => _isInitializing;
+
+  /// Exposes photo inference progress to loading indicators.
   bool get isAnalyzing => _isAnalyzing;
+
+  /// Blocks new scans while initialization, image selection, or inference is active.
   bool get isBusy => _isInitializing || _isAnalyzing || _isPickingImage;
 
+  /// Exposes the latest model, picker, or photo-analysis failure for the UI.
   String? get errorMessage => _errorMessage;
+
+  /// Exposes count-based harvest guidance for the current photo result.
   String get recommendation => _recommendation;
 
+  /// Provides access to the shared photo-inference service.
   ModelService get modelService => _modelService;
 
+  /// Returns the file currently shown and analyzed on the result screen.
   File? get selectedImage => _selectedImage;
+
+  /// Returns the current photo's filtered detections and their display masks.
   List<Detection> get detections => _detections;
 
+  /// Counts final detections, not raw anchors produced by YOLO.
   int get totalDetected => _detections.length;
+
+  /// Counts detections classified as Mature for the summary and recommendation.
   int get matureCount =>
       _detections.where((d) => d.maturityClass == MaturityClass.mature).length;
+
+  /// Counts detections classified as Immature for the summary and recommendation.
   int get immatureCount => _detections
       .where((d) => d.maturityClass == MaturityClass.immature)
       .length;
+
+  /// Counts detections classified as Overmature for the summary and recommendation.
   int get overmatureCount => _detections
       .where((d) => d.maturityClass == MaturityClass.overmature)
       .length;
 
+  /// Loads the bundled model once and notifies the splash when loading finishes.
+  /// Failures are exposed as UI errors rather than crashing startup.
   Future<void> initialize() async {
-    if (_didInitialize) {
+    if (_didInitialize || _isInitializing || _isDisposed) {
       return;
     }
 
-    _didInitialize = true;
     _isInitializing = true;
     notifyListeners();
 
     try {
       await _modelService.loadModel();
+      _didInitialize = true;
+      _errorMessage = null;
     } catch (error) {
       _errorMessage = 'Model could not be loaded: $error';
     }
@@ -68,8 +92,11 @@ class DetectionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Opens the camera/gallery picker and analyzes the chosen file.
+  /// Duplicate requests are blocked; cancellation preserves the previous result.
   Future<bool> scanFromSource(ImageSource source) async {
-    if (isBusy) return false;
+    if (isBusy || _isDisposed) return false;
+    final generation = _scanGeneration;
     _errorMessage = null;
     _isPickingImage = true;
     notifyListeners();
@@ -78,10 +105,16 @@ class DetectionProvider extends ChangeNotifier {
     try {
       pickedImage = await _imageService.pickImage(source: source);
     } catch (error) {
-      _errorMessage = 'Unable to open the image picker. Please try again.';
+      if (!_isDisposed && generation == _scanGeneration) {
+        _errorMessage = 'Unable to open the image picker. Please try again.';
+      }
       debugPrint('Image selection failed: $error');
     }
     _isPickingImage = false;
+    if (_isDisposed || generation != _scanGeneration) {
+      notifyListeners();
+      return false;
+    }
     if (pickedImage == null) {
       // Cancellation is a normal action; keep any existing result intact.
       notifyListeners();
@@ -91,16 +124,19 @@ class DetectionProvider extends ChangeNotifier {
     return scanFile(pickedImage);
   }
 
+  /// Selects a captured or picked photo, clears old detections, and starts analysis.
   Future<bool> scanFile(File imageFile) async {
-    if (isBusy) return false;
+    if (isBusy || _isDisposed) return false;
 
     _selectedImage = imageFile;
     _detections = [];
     return analyzeSelectedImage();
   }
 
+  /// Runs the photo pipeline, updates detections and guidance, and reports errors.
+  /// The finally block always clears the busy state and refreshes listeners.
   Future<bool> analyzeSelectedImage() async {
-    if (isBusy) return false;
+    if (isBusy || _isDisposed) return false;
     if (_selectedImage == null) {
       _errorMessage = 'Please capture or choose an image first.';
       notifyListeners();
@@ -108,12 +144,19 @@ class DetectionProvider extends ChangeNotifier {
     }
 
     _isAnalyzing = true;
+    final generation = ++_scanGeneration;
     final image = _selectedImage!;
+    _detections = [];
+    _recommendation = 'Analysis has not completed. Please try again.';
     _errorMessage = null;
     notifyListeners();
 
     try {
-      _detections = await _modelService.detectFruits(image);
+      final detections = await _modelService.detectFruits(image);
+      // Back/clear/dispose invalidates the result, not the native computation.
+      // Keep busy until computation ends to prevent overlapping photo workers.
+      if (_isDisposed || generation != _scanGeneration) return false;
+      _detections = detections;
       // Recommendation logic is intentionally simple and explainable for field use.
       _recommendation = _buildRecommendation(
         mature: matureCount,
@@ -122,7 +165,10 @@ class DetectionProvider extends ChangeNotifier {
       );
       return true;
     } catch (error) {
-      _errorMessage = 'Detection failed: $error';
+      if (!_isDisposed && generation == _scanGeneration) {
+        _errorMessage = 'Unable to analyze this image. Try another photo.';
+        debugPrint('Photo analysis failed: $error');
+      }
       return false;
     } finally {
       _isAnalyzing = false;
@@ -130,7 +176,9 @@ class DetectionProvider extends ChangeNotifier {
     }
   }
 
+  /// Clears the selected photo, detections, errors, and guidance for a new scan.
   void clearCurrentResult() {
+    _scanGeneration++;
     _selectedImage = null;
     _detections = [];
     _recommendation = 'Run a scan to get a harvest recommendation.';
@@ -138,6 +186,14 @@ class DetectionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Async completions must never notify widgets after this provider is removed.
+  @override
+  void notifyListeners() {
+    if (!_isDisposed) super.notifyListeners();
+  }
+
+  /// Chooses simple guidance from stage counts, not another AI model.
+  /// Ties favor Mature first, then Immature; zero detections have separate guidance.
   String _buildRecommendation({
     required int mature,
     required int immature,
@@ -158,8 +214,11 @@ class DetectionProvider extends ChangeNotifier {
     return 'These fruits may be overripe. Prioritize immediate sorting.';
   }
 
+  /// Releases the shared interpreter when this provider is removed.
   @override
   void dispose() {
+    _isDisposed = true;
+    _scanGeneration++;
     _modelService.dispose();
     super.dispose();
   }

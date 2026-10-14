@@ -39,6 +39,8 @@ macos/Flutter/Flutter-Generated.xcconfig
 /build/
 /coverage/
 .venv312/
+__pycache__/
+*.py[cod]
 
 # Symbolication related
 app.*.symbols

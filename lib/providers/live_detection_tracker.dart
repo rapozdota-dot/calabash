@@ -14,12 +14,14 @@ class LiveDetection {
     required this.detection,
     required this.confidenceTier,
     required this.animateBounds,
+    this.maturityUncertain = false,
   });
 
   final int trackId;
   final Detection detection;
   final LiveConfidenceTier confidenceTier;
   final bool animateBounds;
+  final bool maturityUncertain;
 }
 
 class LiveDetectionUpdate {
@@ -47,8 +49,11 @@ class LiveDetectionTracker {
   final List<_StableDetectionTrack> _tracks = [];
   int _nextTrackId = 1;
 
+  /// Counts tracked candidates, including ones not yet confirmed for display.
   int get activeTrackCount => _tracks.length;
 
+  /// Matches current detections to prior tracks and confirms repeated observations.
+  /// Requires valid classes, confidence, and nonempty masks; missing tracks are removed immediately.
   LiveDetectionUpdate update(List<Detection> detections) {
     detections = detections
         .where(
@@ -132,6 +137,9 @@ class LiveDetectionTracker {
             math.min(track.stableConfidence, detection.confidence),
           ),
           animateBounds: animateBounds,
+          maturityUncertain:
+              track.pendingClass != null ||
+              track.classAgreementCount < confirmationFrames,
         ),
       );
     }
@@ -150,12 +158,14 @@ class LiveDetectionTracker {
     );
   }
 
+  /// Discards all tracks and reports whether any were present.
   bool clear() {
     final hadTracks = _tracks.isNotEmpty;
     _tracks.clear();
     return hadTracks;
   }
 
+  /// Finds an unused prior track using overlap, center distance, and compatible area.
   _TrackMatch? _findBestTrackMatch(
     Detection detection,
     List<_StableDetectionTrack> tracks,
@@ -213,6 +223,7 @@ class LiveDetectionTracker {
     return bestMatch;
   }
 
+  /// Allows interpolation only for small movements, avoiding sliding masks across large jumps.
   bool _shouldAnimateBounds({
     required Rect previous,
     required Rect next,
@@ -226,6 +237,7 @@ class LiveDetectionTracker {
         heightDelta <= AppConstants.liveOverlayAnimationMaxSizeDelta;
   }
 
+  /// Checks stricter motion/size limits used to declare a capture-ready view.
   bool _isReadyStableMotion({
     required Rect previous,
     required Rect next,
@@ -238,11 +250,13 @@ class LiveDetectionTracker {
         heightDelta <= AppConstants.liveReadySizeDeltaThreshold;
   }
 
+  /// Measures relative size change using a nonzero baseline for tiny boxes.
   double _sizeDeltaRatio(double previous, double next) {
     final baseline = math.max(previous.abs(), 0.0001);
     return (next - previous).abs() / baseline;
   }
 
+  /// Groups confidence into normal, weak, or low for cautious live labels.
   LiveConfidenceTier _confidenceTierFor(double confidence) {
     if (confidence >= AppConstants.liveHighConfidenceThreshold) {
       return LiveConfidenceTier.normal;
@@ -253,6 +267,7 @@ class LiveDetectionTracker {
     return LiveConfidenceTier.low;
   }
 
+  /// Requires visible confirmed tracks, normal confidence, and stable motion for readiness.
   LiveStabilityStatus _stabilityStatusFor(
     List<LiveDetection> liveDetections,
     List<_StableDetectionTrack> tracks,
@@ -270,7 +285,8 @@ class LiveDetectionTracker {
       (track) =>
           track.stableMotionFrameCount >=
               AppConstants.liveReadyStableFrameThreshold &&
-          track.pendingClass == null,
+          track.pendingClass == null &&
+          track.classAgreementCount >= confirmationFrames,
     );
 
     return allNormalConfidence && allTracksStable
@@ -278,6 +294,7 @@ class LiveDetectionTracker {
         : LiveStabilityStatus.holdSteady;
   }
 
+  /// Measures box overlap relative to their combined area for track matching.
   double _iou(Rect a, Rect b) {
     final left = math.max(a.left, b.left);
     final top = math.max(a.top, b.top);
@@ -298,6 +315,7 @@ class LiveDetectionTracker {
     return intersection / union;
   }
 
+  /// Measures distance between box centers in normalized image coordinates.
   double _centerDistance(Rect a, Rect b) {
     final dx = a.center.dx - b.center.dx;
     final dy = a.center.dy - b.center.dy;
@@ -326,6 +344,7 @@ class _StableDetectionTrack {
     required this.stableMotionFrameCount,
   });
 
+  /// Starts an unconfirmed track from one observation; later frames establish stability.
   factory _StableDetectionTrack.fromDetection({
     required int id,
     required Detection detection,
@@ -347,11 +366,14 @@ class _StableDetectionTrack {
   MaturityClass stableClass;
   double stableConfidence;
   int observationCount = 1;
+  int classAgreementCount = 1;
   bool isConfirmed = false;
   int stableMotionFrameCount;
   MaturityClass? pendingClass;
   int pendingCount = 0;
 
+  /// Updates motion/confidence and requires repeated evidence before switching a stage.
+  /// Weak conflicting predictions cannot overwrite a confirmed maturity label.
   void updateWith(
     Detection detection, {
     required bool isStableMotion,
@@ -365,18 +387,20 @@ class _StableDetectionTrack {
         : 0;
     boundingBox = detection.boundingBox;
 
-    // Confirmation requires a consistent stage, not just a nearby box twice.
+    // Repeated localization confirms fruit presence even if maturity fluctuates.
+    // Keep the stage tentative until a subsequent observation agrees.
     if (!isConfirmed && detection.maturityClass != stableClass) {
       stableClass = detection.maturityClass;
       stableConfidence = detection.confidence;
-      observationCount = 1;
+      classAgreementCount = 1;
       stableMotionFrameCount = hasNormalConfidence ? 1 : 0;
-      pendingClass = null;
-      pendingCount = 0;
+      pendingClass = detection.maturityClass;
+      pendingCount = 1;
       return;
     }
 
     if (detection.maturityClass == stableClass) {
+      classAgreementCount++;
       stableConfidence = detection.confidence;
       pendingClass = null;
       pendingCount = 0;
@@ -384,8 +408,9 @@ class _StableDetectionTrack {
     }
 
     // A weak conflicting stage cannot overwrite a confirmed label.
+    classAgreementCount = 0;
     if (!hasNormalConfidence) {
-      pendingClass = null;
+      pendingClass = detection.maturityClass;
       pendingCount = 0;
       return;
     }
@@ -398,6 +423,7 @@ class _StableDetectionTrack {
     }
 
     if (pendingCount >= AppConstants.liveStableClassFrames) {
+      classAgreementCount = pendingCount;
       stableClass = detection.maturityClass;
       stableConfidence = detection.confidence;
       pendingClass = null;

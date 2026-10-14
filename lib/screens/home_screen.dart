@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
+  /// Shows the branded Home page with distinct live-scan and gallery actions.
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
@@ -125,6 +126,7 @@ class HomeScreen extends StatelessWidget {
 class _ScanActions extends StatelessWidget {
   const _ScanActions();
 
+  /// Rebuilds only scan controls when picker/model busy state changes.
   @override
   Widget build(BuildContext context) => Consumer<DetectionProvider>(
     builder: (context, provider, child) => Column(
@@ -181,12 +183,15 @@ class _ScanActions extends StatelessWidget {
     ),
   );
 
+  /// Opens the gallery directly and navigates to results only after a successful scan.
   Future<void> _chooseImage(
     BuildContext context,
     DetectionProvider provider,
   ) async {
     final success = await provider.scanFromSource(ImageSource.gallery);
-    if (context.mounted && success) {
+    if (context.mounted &&
+        success &&
+        ModalRoute.of(context)?.isCurrent == true) {
       await Navigator.of(context).push(fadeRoute(const ResultScreen()));
     }
   }

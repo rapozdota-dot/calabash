@@ -8,6 +8,7 @@ import 'package:image/image.dart' as img;
 class CameraImageConverter {
   CameraImageConverter._();
 
+  /// Adapts a camera-plugin frame into the shared plane-to-RGB conversion path.
   static img.Image toImage(
     CameraImage frame, {
     required int rotationDegrees,
@@ -67,6 +68,8 @@ class CameraImageConverter {
     return orientedImage;
   }
 
+  /// Converts Android Y/U/V planes to RGB using each plane's actual row and pixel strides.
+  /// U and V have half-resolution coordinates; padded rows must not be read as pixels.
   static img.Image _fromYuv420(
     int width,
     int height,
@@ -108,6 +111,7 @@ class CameraImageConverter {
     return image;
   }
 
+  /// Reads BGRA bytes with the native row/pixel stride and writes RGB, discarding alpha.
   static img.Image _fromBgra8888(
     int width,
     int height,
@@ -138,6 +142,7 @@ class CameraImageConverter {
     return image;
   }
 
+  /// Rounds converted colors into the valid 0-255 image-byte range.
   static int _clampToByte(double value) {
     return math.max(0, math.min(255, value.round()));
   }
@@ -147,6 +152,7 @@ class CameraImageConversionTiming {
   int rgbConversionMicros = 0;
   int orientationMicros = 0;
 
+  /// Combines pixel conversion and orientation costs for frame diagnostics.
   int get totalMicros => rgbConversionMicros + orientationMicros;
 }
 
