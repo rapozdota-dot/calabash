@@ -37,6 +37,8 @@ class CalabashApp extends StatelessWidget {
 
   /// Defines readable typography, agricultural colors, and consistent controls.
   ThemeData _buildTheme() {
+    // Bundle the theme's regular/medium faces; a fresh install must work offline.
+    GoogleFonts.config.allowRuntimeFetching = false;
     final base = ThemeData(
       useMaterial3: true,
       colorScheme: ColorScheme.fromSeed(

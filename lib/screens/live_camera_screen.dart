@@ -538,7 +538,7 @@ class _LiveCaptureControls extends StatelessWidget {
       }
 
       final success = await detectionProvider.scanFile(capturedImage);
-      if (!context.mounted) {
+      if (!context.mounted || ModalRoute.of(context)?.isCurrent != true) {
         return;
       }
 

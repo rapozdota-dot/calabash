@@ -189,7 +189,9 @@ class _ScanActions extends StatelessWidget {
     DetectionProvider provider,
   ) async {
     final success = await provider.scanFromSource(ImageSource.gallery);
-    if (context.mounted && success) {
+    if (context.mounted &&
+        success &&
+        ModalRoute.of(context)?.isCurrent == true) {
       await Navigator.of(context).push(fadeRoute(const ResultScreen()));
     }
   }

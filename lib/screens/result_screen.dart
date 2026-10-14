@@ -28,22 +28,30 @@ class ResultScreen extends StatelessWidget {
         final imageFile = provider.selectedImage!;
         final detections = provider.detections;
 
-        return Scaffold(
-          appBar: AppBar(title: const Text('Detection Result')),
-          body: SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(AppConstants.resultPagePadding),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  DetectionImage(imageFile: imageFile, detections: detections),
-                  if (provider.errorMessage != null && !provider.isBusy) ...[
+        return PopScope(
+          onPopInvokedWithResult: (didPop, result) {
+            if (didPop && provider.isBusy) provider.clearCurrentResult();
+          },
+          child: Scaffold(
+            appBar: AppBar(title: const Text('Detection Result')),
+            body: SafeArea(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(AppConstants.resultPagePadding),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    DetectionImage(
+                      imageFile: imageFile,
+                      detections: detections,
+                    ),
+                    if (provider.errorMessage != null && !provider.isBusy) ...[
+                      const SizedBox(height: AppConstants.sectionSpacing),
+                      _messageBanner(context, provider.errorMessage!),
+                    ],
                     const SizedBox(height: AppConstants.sectionSpacing),
-                    _messageBanner(context, provider.errorMessage!),
+                    ..._resultSections(context, provider),
                   ],
-                  const SizedBox(height: AppConstants.sectionSpacing),
-                  ..._resultSections(context, provider),
-                ],
+                ),
               ),
             ),
           ),
@@ -90,6 +98,9 @@ class ResultScreen extends StatelessWidget {
     DetectionProvider provider,
   ) {
     final detections = provider.detections;
+    if (provider.isAnalyzing || provider.errorMessage != null) {
+      return [_zeroDetectionState(context, provider)];
+    }
     if (detections.isEmpty) {
       return [_zeroDetectionState(context, provider)];
     }
@@ -191,6 +202,7 @@ class ResultScreen extends StatelessWidget {
   /// Distinguishes active analysis from a completed scan with no calabash detections.
   Widget _zeroDetectionState(BuildContext context, DetectionProvider provider) {
     final isBusy = provider.isBusy;
+    final failed = !isBusy && provider.errorMessage != null;
 
     return Card(
       child: Padding(
@@ -207,7 +219,11 @@ class ResultScreen extends StatelessWidget {
             ),
             const SizedBox(height: AppConstants.smallSpacing),
             Text(
-              isBusy ? 'Analyzing image...' : 'No calabash fruits detected',
+              isBusy
+                  ? 'Analyzing image...'
+                  : failed
+                  ? 'Analysis could not be completed'
+                  : 'No calabash fruits detected',
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
@@ -217,6 +233,8 @@ class ResultScreen extends StatelessWidget {
             Text(
               isBusy
                   ? 'Please wait while the selected image is being processed.'
+                  : failed
+                  ? 'No detection result is available. Try another image or capture a new photo.'
                   : 'We could not find a calabash fruit in this image. Try a clearer photo with the fruit visible and well lit.',
               textAlign: TextAlign.center,
               style: Theme.of(
@@ -263,11 +281,13 @@ class ResultScreen extends StatelessWidget {
                   size: 20,
                 ),
                 const SizedBox(width: 8),
-                Text(
-                  'Suggested guidance',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    color: AppConstants.primaryGreen,
-                    fontWeight: FontWeight.w900,
+                Flexible(
+                  child: Text(
+                    'Suggested guidance',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: AppConstants.primaryGreen,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
               ],
@@ -365,10 +385,23 @@ class ResultScreen extends StatelessWidget {
 
   /// Provides a direct camera retry action after viewing detections.
   Widget _scanAgainButton(BuildContext context, DetectionProvider provider) {
-    return OutlinedButton.icon(
-      onPressed: () => _startNewScan(context, provider),
-      icon: const Icon(Icons.refresh_rounded, size: 20),
-      label: const Text('Capture Again'),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        OutlinedButton.icon(
+          onPressed: provider.isBusy ? null : () => _tryAnotherImage(provider),
+          icon: const Icon(Icons.photo_library_outlined, size: 20),
+          label: const Text('Try Another Image'),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: provider.isBusy
+              ? null
+              : () => _startNewScan(context, provider),
+          icon: const Icon(Icons.refresh_rounded, size: 20),
+          label: const Text('Capture Again'),
+        ),
+      ],
     );
   }
 

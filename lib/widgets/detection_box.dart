@@ -168,16 +168,9 @@ class DetectionBox extends StatelessWidget {
                 isComplex: true,
               ),
             ),
-            Positioned(
-              left: labelBounds.left,
-              top: labelBounds.top,
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxWidth: (imageWidth - labelBounds.left - 8).clamp(
-                    92.0,
-                    220.0,
-                  ),
-                ),
+            Positioned.fill(
+              child: CustomSingleChildLayout(
+                delegate: _DetectionLabelLayout(labelBounds.topLeft),
                 child: DecoratedBox(
                   decoration: BoxDecoration(
                     color: color.withValues(alpha: 0.95),
@@ -239,8 +232,8 @@ class DetectionBox extends StatelessWidget {
   Rect get _labelBounds {
     final mask = detection.mask;
     final bounds = mask?.bounds ?? detection.boundingBox;
-    final left = (bounds.left * imageWidth).clamp(6.0, imageWidth - 96);
-    final top = ((bounds.top * imageHeight) - 8).clamp(6.0, imageHeight - 44);
+    final left = bounds.left * imageWidth;
+    final top = bounds.top * imageHeight - 8;
 
     return Rect.fromLTWH(
       left,
@@ -249,6 +242,31 @@ class DetectionBox extends StatelessWidget {
       bounds.height * imageHeight,
     );
   }
+}
+
+/// Clamps using the label's measured size, including Android text scaling.
+/// Fixed 96x44 assumptions fail for narrow photos and labels near the bottom.
+class _DetectionLabelLayout extends SingleChildLayoutDelegate {
+  const _DetectionLabelLayout(this.anchor);
+
+  final Offset anchor;
+
+  @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) =>
+      BoxConstraints(maxWidth: constraints.maxWidth.clamp(0.0, 220.0));
+
+  @override
+  Offset getPositionForChild(Size size, Size childSize) => Offset(
+    anchor.dx.clamp(0.0, (size.width - childSize.width).clamp(0.0, size.width)),
+    anchor.dy.clamp(
+      0.0,
+      (size.height - childSize.height).clamp(0.0, size.height),
+    ),
+  );
+
+  @override
+  bool shouldRelayout(_DetectionLabelLayout oldDelegate) =>
+      anchor != oldDelegate.anchor;
 }
 
 class _DetectionMaskPainter extends CustomPainter {

@@ -103,6 +103,26 @@ void main() {
         .setMockMethodCallHandler(permissionChannel, null);
   });
 
+  test('TC19/59 granting permission in Settings recovers on resume', () async {
+    var permission = 4; // Permanently denied.
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(permissionChannel, (call) async {
+          if (call.method == 'openAppSettings') return true;
+          return permission;
+        });
+    final provider = LiveCameraProvider(workerFactory: _SlowWorker.new);
+    await provider.initialize();
+    expect(provider.status, LiveCameraStatus.permissionPermanentlyDenied);
+    await provider.openSettings();
+    provider.didChangeAppLifecycleState(AppLifecycleState.inactive);
+    permission = 1;
+    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect(provider.isCameraReady, isTrue);
+    provider.dispose();
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  });
+
   test(
     'capture again stays usable while a single worker is still starting',
     () async {

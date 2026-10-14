@@ -150,6 +150,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Opens system app settings when camera permission cannot be requested again.
   Future<void> openSettings() {
+    // No controller exists after permanent denial, so lifecycle cleanup alone
+    // cannot schedule recovery. Recheck access when returning from Settings.
+    _shouldRestoreOnResume = true;
     return openAppSettings();
   }
 
