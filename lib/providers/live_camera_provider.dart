@@ -703,6 +703,21 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
 
       if (!_shouldPublishResult(frame, modelResult, publishAt)) {
+        // Record slow/stale completions too; omitting them would bias the study
+        // toward fast frames because the normal app rejects stale results.
+        if (measurementTimer != null) {
+          PerformanceProbe.record(
+            method: 'live',
+            timer: measurementTimer,
+            startedAt: measurementStart!,
+            detections: modelResult.detections.length,
+            backend: modelResult.backendInfo.label,
+            frameId: frame.id,
+            frameAgeMs:
+                publishAt.difference(frame.capturedAt).inMicroseconds / 1000,
+            outcome: 'stale_result_rejected',
+          );
+        }
         _performanceTracker.recordStaleResultSkipped();
         _expireOverlayIfEmergencyStale(publishAt);
         if (publishAt.difference(frame.capturedAt) >
@@ -751,6 +766,16 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         );
       }
     } catch (error) {
+      if (measurementTimer != null) {
+        PerformanceProbe.record(
+          method: 'live',
+          timer: measurementTimer,
+          startedAt: measurementStart!,
+          detections: 0,
+          frameId: frame.id,
+          outcome: 'error',
+        );
+      }
       if (kDebugMode) {
         debugPrint('Live frame detection failed: $error');
       }

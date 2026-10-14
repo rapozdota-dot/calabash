@@ -15,6 +15,7 @@ class PerformanceProbe {
     required Stopwatch timer,
     required DateTime startedAt,
     required int detections,
+    String outcome = 'success',
     String? backend,
     int? frameId,
     double? frameAgeMs,
@@ -27,7 +28,7 @@ class PerformanceProbe {
     // A single structured line lets ADB preserve each sample without UI widgets.
     // ignore: avoid_print
     print(
-      'CALABASH_PERF ${jsonEncode({'sequence': ++_sequence, 'method': method, 'start_utc': startedAt.toUtc().toIso8601String(), 'end_utc': endedAt.toUtc().toIso8601String(), 'processing_ms': elapsed, 'detections': detections, 'backend': backend, 'frame_id': frameId, 'frame_age_ms': frameAgeMs, 'image_path': imagePath})}',
+      'CALABASH_PERF ${jsonEncode({'sequence': ++_sequence, 'method': method, 'outcome': outcome, 'start_utc': startedAt.toUtc().toIso8601String(), 'end_utc': endedAt.toUtc().toIso8601String(), 'processing_ms': elapsed, 'detections': detections, 'backend': backend, 'frame_id': frameId, 'frame_age_ms': frameAgeMs, 'image_path': imagePath})}',
     );
   }
 }
