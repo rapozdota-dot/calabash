@@ -107,17 +107,6 @@ class DetectionProvider extends ChangeNotifier {
     try {
       pickedImage = await _imageService.pickImage(source: source);
     } catch (error) {
-      if (measurementTimer != null) {
-        PerformanceProbe.record(
-          method: _measurementMethod,
-          timer: measurementTimer,
-          startedAt: measurementStart!,
-          detections: 0,
-          backend: 'CPU, threads=2',
-          imagePath: image.path,
-          outcome: 'error',
-        );
-      }
       if (!_isDisposed && generation == _scanGeneration) {
         _errorMessage = 'Unable to open the image picker. Please try again.';
       }
@@ -196,6 +185,17 @@ class DetectionProvider extends ChangeNotifier {
       }
       return true;
     } catch (error) {
+      if (measurementTimer != null) {
+        PerformanceProbe.record(
+          method: _measurementMethod,
+          timer: measurementTimer,
+          startedAt: measurementStart!,
+          detections: 0,
+          backend: 'CPU, threads=2',
+          imagePath: image.path,
+          outcome: 'error',
+        );
+      }
       if (!_isDisposed && generation == _scanGeneration) {
         _errorMessage = 'Unable to analyze this image. Try another photo.';
         debugPrint('Photo analysis failed: $error');
