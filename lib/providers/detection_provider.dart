@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/services/image_service.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
+import 'package:calabash_maturity_detection/services/performance_probe.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -28,6 +29,7 @@ class DetectionProvider extends ChangeNotifier {
 
   File? _selectedImage;
   List<Detection> _detections = [];
+  String _measurementMethod = 'photo';
 
   /// Exposes model-loading progress to the startup screen.
   bool get isInitializing => _isInitializing;
@@ -121,14 +123,18 @@ class DetectionProvider extends ChangeNotifier {
       return false;
     }
 
-    return scanFile(pickedImage);
+    return scanFile(pickedImage, measurementMethod: source.name);
   }
 
   /// Selects a captured or picked photo, clears old detections, and starts analysis.
-  Future<bool> scanFile(File imageFile) async {
+  Future<bool> scanFile(
+    File imageFile, {
+    String measurementMethod = 'photo',
+  }) async {
     if (isBusy || _isDisposed) return false;
 
     _selectedImage = imageFile;
+    _measurementMethod = measurementMethod;
     _detections = [];
     return analyzeSelectedImage();
   }
@@ -143,6 +149,10 @@ class DetectionProvider extends ChangeNotifier {
       return false;
     }
 
+    final measurementStart = PerformanceProbe.enabled ? DateTime.now() : null;
+    final measurementTimer = PerformanceProbe.enabled
+        ? (Stopwatch()..start())
+        : null;
     _isAnalyzing = true;
     final generation = ++_scanGeneration;
     final image = _selectedImage!;
@@ -163,6 +173,16 @@ class DetectionProvider extends ChangeNotifier {
         immature: immatureCount,
         overmature: overmatureCount,
       );
+      if (measurementTimer != null) {
+        PerformanceProbe.record(
+          method: _measurementMethod,
+          timer: measurementTimer,
+          startedAt: measurementStart!,
+          detections: _detections.length,
+          backend: 'CPU, threads=2',
+          imagePath: image.path,
+        );
+      }
       return true;
     } catch (error) {
       if (!_isDisposed && generation == _scanGeneration) {

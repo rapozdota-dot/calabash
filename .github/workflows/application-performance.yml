@@ -1,0 +1,36 @@
+name: Application Performance Measurement APK
+
+on:
+  push:
+    branches:
+      - codex/app-performance-measurements
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measurement-apk:
+    runs-on: ubuntu-latest
+    env:
+      ORG_GRADLE_PROJECT_calabashPerformance: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.38.7"
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build apk --release --build-number=29 --dart-define=CALABASH_PERF=true --dart-define=CALABASH_GALLERY_REPEATS=10
+      - uses: actions/upload-artifact@v4
+        with:
+          name: calabash-application-performance-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 7

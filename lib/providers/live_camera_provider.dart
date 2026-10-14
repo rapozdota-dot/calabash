@@ -8,6 +8,7 @@ import 'package:calabash_maturity_detection/services/camera_image_converter.dart
 import 'package:calabash_maturity_detection/services/camera_frame_policy.dart';
 import 'package:calabash_maturity_detection/services/live_inference_worker.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
+import 'package:calabash_maturity_detection/services/performance_probe.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
@@ -644,6 +645,10 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     final activeFrameCompleter = Completer<void>();
+    final measurementStart = PerformanceProbe.enabled ? DateTime.now() : null;
+    final measurementTimer = PerformanceProbe.enabled
+        ? (Stopwatch()..start())
+        : null;
     _activeFrameCompleter = activeFrameCompleter;
     _isProcessingFrame = true;
     // Subsequent frames publish once on completion instead of flickering busy/idle.
@@ -733,6 +738,18 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       _performanceTracker.recordResultPublished(
         publishStopwatch.elapsedMicroseconds,
       );
+      if (measurementTimer != null) {
+        PerformanceProbe.record(
+          method: 'live',
+          timer: measurementTimer,
+          startedAt: measurementStart!,
+          detections: detections.length,
+          backend: modelResult.backendInfo.label,
+          frameId: frame.id,
+          frameAgeMs:
+              DateTime.now().difference(frame.capturedAt).inMicroseconds / 1000,
+        );
+      }
     } catch (error) {
       if (kDebugMode) {
         debugPrint('Live frame detection failed: $error');

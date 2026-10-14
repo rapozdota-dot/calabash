@@ -22,6 +22,10 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.calabash_maturity_detection"
+        // A separate measurement install preserves the user's normal release app.
+        if (project.findProperty("calabashPerformance") == "true") {
+            applicationIdSuffix = ".performance"
+        }
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

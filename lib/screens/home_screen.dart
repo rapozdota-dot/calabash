@@ -2,6 +2,7 @@ import 'package:calabash_maturity_detection/screens/about_screen.dart';
 import 'package:calabash_maturity_detection/providers/detection_provider.dart';
 import 'package:calabash_maturity_detection/screens/live_camera_screen.dart';
 import 'package:calabash_maturity_detection/screens/result_screen.dart';
+import 'package:calabash_maturity_detection/services/performance_probe.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:calabash_maturity_detection/utils/navigation.dart';
 import 'package:flutter/material.dart';
@@ -189,6 +190,16 @@ class _ScanActions extends StatelessWidget {
     DetectionProvider provider,
   ) async {
     final success = await provider.scanFromSource(ImageSource.gallery);
+    // Measurement APK only: repeat the same selected gallery file through the
+    // unchanged photo pipeline, including file decoding and per-photo model load.
+    if (PerformanceProbe.enabled && success) {
+      for (var run = 1; run < PerformanceProbe.galleryRepeats; run++) {
+        if (!context.mounted || ModalRoute.of(context)?.isCurrent != true) {
+          return;
+        }
+        if (!await provider.analyzeSelectedImage()) return;
+      }
+    }
     if (context.mounted &&
         success &&
         ModalRoute.of(context)?.isCurrent == true) {
