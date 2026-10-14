@@ -752,52 +752,6 @@ class _LiveInferenceWorkerRuntime {
     }
   }
 
-  /// Lists platform-compatible delegates and CPU thread counts, removing duplicate configurations.
-  List<TfliteBackendConfig> _candidateBackends(
-    TfliteBackendConfig? cachedConfig,
-  ) {
-    final highThreadCount = math.max(
-      2,
-      math.min(4, Platform.numberOfProcessors ~/ 2),
-    );
-    final candidates = <TfliteBackendConfig>[
-      if (Platform.isAndroid)
-        const TfliteBackendConfig(
-          kind: TfliteBackendKind.gpu,
-          label: 'GPU delegate',
-          threads: 1,
-        ),
-      if (Platform.isAndroid)
-        const TfliteBackendConfig(
-          kind: TfliteBackendKind.nnapi,
-          label: 'NNAPI',
-          threads: 2,
-        ),
-      TfliteBackendConfig(
-        kind: TfliteBackendKind.xnnpack,
-        label: 'XNNPACK CPU',
-        threads: highThreadCount,
-      ),
-      const TfliteBackendConfig(
-        kind: TfliteBackendKind.xnnpack,
-        label: 'XNNPACK CPU',
-        threads: 2,
-      ),
-      TfliteBackendConfig(
-        kind: TfliteBackendKind.cpu,
-        label: 'CPU',
-        threads: highThreadCount,
-      ),
-      TfliteBackendConfig.cpu2,
-    ];
-
-    final seen = <String>{};
-    return candidates
-        .where((config) => config.cacheKey != cachedConfig?.cacheKey)
-        .where((config) => seen.add(config.cacheKey))
-        .toList(growable: false);
-  }
-
   /// Converts and orients the transferred frame, runs the shared model pipeline, and packages timings.
   Future<LiveInferenceResult> detect(LiveInferenceFrame frame) async {
     final modelService = _modelService;

@@ -4,6 +4,12 @@ name: Build Calabash iOS IPA
 on:
   # iOS builds are manual-only; normal updates build Android only.
   workflow_dispatch:
+    inputs:
+      performance_recording:
+        description: Record research performance CSV files (CALABASH_PERF)
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   build-ios:
@@ -28,12 +34,24 @@ jobs:
         run: flutter analyze
 
       - name: Run tests
-        run: flutter test
+        run: |
+          flutter test
+          flutter test --dart-define=CALABASH_PERF=true test/performance_probe_test.dart
 
       - name: Build unsigned iOS app
-        run: flutter build ios --release --no-codesign --build-number=${{ github.run_number }}
+        env:
+          CALABASH_PERF: ${{ inputs.performance_recording && 'true' || 'false' }}
+        run: |
+          model_sha=$(shasum -a 256 assets/model/model.tflite | awk '{print $1}')
+          flutter build ios --release --no-codesign --build-number=${{ github.run_number }} \
+            --dart-define="CALABASH_PERF=$CALABASH_PERF" \
+            --dart-define="CALABASH_SOURCE_REVISION=$GITHUB_SHA" \
+            --dart-define="CALABASH_BUILD_NUMBER=$GITHUB_RUN_NUMBER" \
+            --dart-define="CALABASH_MODEL_SHA256=$model_sha"
 
       - name: Record source revision
+        env:
+          CALABASH_PERF: ${{ inputs.performance_recording && 'true' || 'false' }}
         run: |
           mkdir -p dist
           {
@@ -43,6 +61,9 @@ jobs:
             echo "Ref: $GITHUB_REF"
             echo "Branch or tag: $GITHUB_REF_NAME"
             echo "Commit: $GITHUB_SHA"
+            echo "Build number: $GITHUB_RUN_NUMBER"
+            echo "Performance recording: $CALABASH_PERF"
+            echo "Model SHA-256: $(shasum -a 256 assets/model/model.tflite | awk '{print $1}')"
           } > dist/Calabash-source-info.txt
 
       - name: Package IPA
@@ -83,6 +104,7 @@ jobs:
             Ref: ${{ github.ref }}
             Branch or tag: ${{ github.ref_name }}
             Commit: ${{ github.sha }}
+            Performance recording: ${{ inputs.performance_recording && 'true' || 'false' }}
           files: |
             dist/Calabash-unsigned.ipa
             dist/Calabash-source-info.txt

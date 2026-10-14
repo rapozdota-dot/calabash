@@ -1,13 +1,18 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:camera_platform_interface/camera_platform_interface.dart';
 import 'package:calabash_maturity_detection/providers/live_camera_provider.dart';
 import 'package:calabash_maturity_detection/services/live_inference_worker.dart';
+import 'package:calabash_maturity_detection/services/camera_image_converter.dart';
+import 'package:calabash_maturity_detection/services/model_service.dart';
+import 'package:calabash_maturity_detection/services/performance_probe.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _Camera extends CameraPlatform {
+  final frames = StreamController<CameraImageData>.broadcast();
   int captures = 0;
   int creations = 0;
   bool failCapture = false;
@@ -57,7 +62,7 @@ class _Camera extends CameraPlatform {
   Stream<CameraImageData> onStreamedFrameAvailable(
     int cameraId, {
     CameraImageStreamOptions? options,
-  }) => StreamController<CameraImageData>().stream;
+  }) => frames.stream;
   @override
   Future<void> setFlashMode(int cameraId, FlashMode mode) async {}
   @override
@@ -83,6 +88,48 @@ class _SlowWorker extends LiveInferenceWorker {
   }
 }
 
+class _MeasuredWorker extends LiveInferenceWorker {
+  final first = Completer<LiveInferenceResult>();
+  final received = <LiveInferenceFrame>[];
+  @override
+  bool get isReady => true;
+  @override
+  Future<void> start() async {}
+  @override
+  Future<void> dispose() async {}
+  @override
+  Future<LiveInferenceResult> detect(LiveInferenceFrame frame) {
+    received.add(frame);
+    return received.length == 1 ? first.future : Future.value(result(frame));
+  }
+
+  LiveInferenceResult result(LiveInferenceFrame frame) => LiveInferenceResult(
+    frameId: frame.frameId,
+    imageWidth: 4,
+    imageHeight: 4,
+    detections: [],
+    conversionTiming: CameraImageConversionTiming()..rgbConversionMicros = 1,
+    modelTimings: const ModelPipelineTimings(
+      preprocessMicros: 1,
+      resizeLetterboxMicros: 1,
+      tensorFillMicros: 0,
+      inferenceMicros: 1,
+      candidateParsingMicros: 0,
+      nmsMicros: 0,
+      protoExtractionMicros: 0,
+      maskReconstructionMicros: 0,
+      postprocessMicros: 1,
+      totalMicros: 3,
+    ),
+    frameTransferMicros: 1,
+    backendInfo: const LiveInferenceBackendInfo(
+      selectedConfig: TfliteBackendConfig.cpu2,
+      attempts: [],
+      fromCache: false,
+    ),
+  );
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late _Camera camera;
@@ -98,10 +145,77 @@ void main() {
         .setMockMethodCallHandler(permissionChannel, (_) async => 1);
   });
   tearDown(() {
+    camera.frames.close();
     CameraPlatform.instance = original;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(permissionChannel, null);
   });
+
+  test(
+    'live recording preserves one newest pending frame and measures queue separately',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'calabash-live-test-',
+      );
+      final probe = PerformanceProbe(
+        enabled: true,
+        documentsDirectory: () async => directory,
+      );
+      final worker = _MeasuredWorker();
+      final provider = LiveCameraProvider(
+        workerFactory: () => worker,
+        performanceProbe: probe,
+      );
+      addTearDown(() async {
+        provider.dispose();
+        await probe.close();
+        await directory.delete(recursive: true);
+      });
+      final frame = CameraImageData(
+        format: const CameraImageFormat(
+          ImageFormatGroup.bgra8888,
+          raw: 1111970369,
+        ),
+        width: 4,
+        height: 4,
+        planes: [
+          CameraImagePlane(
+            bytes: Uint8List(64),
+            bytesPerRow: 16,
+            bytesPerPixel: 4,
+          ),
+        ],
+      );
+      await provider.initialize();
+      camera.frames.add(frame);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(worker.received.length, 1);
+      camera.frames.add(frame);
+      camera.frames.add(frame);
+      await Future<void>.delayed(const Duration(milliseconds: 110));
+      expect(worker.received.length, 1);
+      worker.first.complete(worker.result(worker.received.first));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(worker.received.map((f) => f.frameId).toList(), [1, 3]);
+      final summary = probe.summaryFor(PerformanceScanMethod.live);
+      expect(summary.successfulCount, 2);
+      expect(summary.warmUpCount, 1);
+      expect(summary.validCount, 1);
+      await probe.flush();
+      final rows = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+      final header = rows[0].split(',');
+      final last = rows[2].split(',');
+      final complete = double.parse(
+        last[header.indexOf('complete_processing_ms')],
+      );
+      final processing = double.parse(last[header.indexOf('processing_ms')]);
+      final queue = double.parse(last[header.indexOf('queue_ms')]);
+      expect(queue, greaterThan(0));
+      expect(complete, closeTo(processing + queue, .002));
+      expect(last[header.indexOf('processed_fps')], isNotEmpty);
+      expect(last[header.indexOf('yolo_inference_ms')], '0.001');
+    },
+  );
 
   test('TC19/59 granting permission in Settings recovers on resume', () async {
     var permission = 4; // Permanently denied.

@@ -8,6 +8,7 @@ import 'package:calabash_maturity_detection/services/camera_image_converter.dart
 import 'package:calabash_maturity_detection/services/camera_frame_policy.dart';
 import 'package:calabash_maturity_detection/services/live_inference_worker.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
+import 'package:calabash_maturity_detection/services/performance_probe.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
@@ -45,8 +46,11 @@ class LiveCameraPermissionPolicy {
 }
 
 class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
-  LiveCameraProvider({LiveInferenceWorker Function()? workerFactory})
-    : _workerFactory = workerFactory ?? LiveInferenceWorker.new {
+  LiveCameraProvider({
+    LiveInferenceWorker Function()? workerFactory,
+    PerformanceProbe? performanceProbe,
+  }) : _workerFactory = workerFactory ?? LiveInferenceWorker.new,
+       _performanceProbe = performanceProbe ?? PerformanceProbe.instance {
     WidgetsBinding.instance.addObserver(this);
     SchedulerBinding.instance.addTimingsCallback(_handleFrameTimings);
   }
@@ -63,6 +67,10 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _overlayEmergencyExpirationTimer;
   Completer<void>? _activeFrameCompleter;
   final _performanceTracker = _LivePerformanceTracker();
+  final PerformanceProbe _performanceProbe;
+  final Stopwatch _completionClock = Stopwatch();
+  int? _lastCompletionMicros;
+  bool _nextFrameIsWarmUp = true;
   int _nextFrameId = 1;
   int _frameGeneration = 0;
   int? _lastPublishedFrameId;
@@ -165,6 +173,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     return _ensurePermissionAndStart(requestPermission: true);
   }
 
+  /// Requests app settings and retries camera initialization when the app resumes.
   Future<bool> openSettings() {
     _shouldRestoreOnResume = true;
     return openAppSettings();
@@ -488,6 +497,13 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         await worker.dispose();
         return;
       }
+      _nextFrameIsWarmUp = true;
+      _lastCompletionMicros = null;
+      if (_performanceProbe.enabled) {
+        _completionClock
+          ..reset()
+          ..start();
+      }
       final backendInfo = worker.backendInfo;
       if (backendInfo != null) {
         _performanceTracker.recordBackendInfo(backendInfo);
@@ -509,11 +525,44 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  void _logLiveBackendInfo(LiveInferenceBackendInfo backendInfo) {
+    if (kReleaseMode) return;
+
+    final attempts = backendInfo.attempts.map(_formatBackendAttempt).join('; ');
+    debugPrint(
+      'LIVE BACKEND: selected=${backendInfo.label} '
+      'fromCache=${backendInfo.fromCache} attempts=[$attempts]',
+    );
+  }
+
+  String _formatBackendAttempt(TfliteBackendBenchmark attempt) {
+    final config = attempt.config;
+    final label = '${config.label}/${config.threads}t';
+    if (attempt.initialized) {
+      return '$label ok avg=${_formatMicros(attempt.averageMicros)} '
+          'warmup=${_formatMicros(attempt.warmupMicros)}';
+    }
+
+    final error = attempt.errorMessage;
+    if (error == null || error.isEmpty) {
+      return '$label failed';
+    }
+    final compactError = error.replaceAll(RegExp(r'\s+'), ' ');
+    final shortenedError = compactError.length > 96
+        ? compactError.substring(0, 96)
+        : compactError;
+    return '$label failed $shortenedError';
+  }
+
+  String _formatMicros(int micros) =>
+      '${(micros / Duration.microsecondsPerMillisecond).toStringAsFixed(1)}ms';
+
   /// Drops pending frames and stops streaming before the native still-photo capture.
   Future<void> _pauseImageStreamForStillCapture(
     CameraController controller,
   ) async {
     _pendingFrame = null;
+    _lastCompletionMicros = null;
     _inferenceCadenceTimer?.cancel();
     _inferenceCadenceTimer = null;
 
@@ -542,6 +591,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Receives camera frames and either submits one or replaces the pending frame.
   /// A one-frame queue and minimum inference interval prevent a growing stale backlog.
   void _handleCameraFrame(CameraImage frame) {
+    final performanceTimer = _performanceProbe.enabled
+        ? (Stopwatch()..start())
+        : null;
     final capturedAt = DateTime.now();
     _performanceTracker.recordFrameReceived(capturedAt);
 
@@ -562,6 +614,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       capturedAt: capturedAt,
       camera: activeController.description,
       deviceOrientation: activeController.value.deviceOrientation,
+      performanceTimer: performanceTimer,
     );
     if (_isProcessingFrame) {
       _storeLatestPendingFrame(liveFrame, reason: _PendingFrameReason.busy);
@@ -666,6 +719,13 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
+    final timer = frame.performanceTimer;
+    final queueMicros = timer?.elapsedMicroseconds;
+    final warmUp = _nextFrameIsWarmUp;
+    LiveInferenceResult? measuredResult;
+    int? resultPreparationMicros;
+    var outcome = 'error';
+    var submitted = false;
     final activeFrameCompleter = Completer<void>();
     _activeFrameCompleter = activeFrameCompleter;
     _isProcessingFrame = true;
@@ -691,13 +751,17 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         rotationDegrees: rotationDegrees,
         lensDirection: frame.camera.lensDirection,
       );
+      submitted = true;
       final modelResult = await worker.detect(workerFrame);
+      measuredResult = modelResult;
+      if (_inferenceWorker == worker) _nextFrameIsWarmUp = false;
       final inferenceEndAt = DateTime.now();
       _lastProcessingTime = inferenceEndAt.difference(inferenceStartAt);
       if (_isDisposed ||
           _cameraController != activeController ||
           generation != _frameGeneration ||
           isCaptureWorkflowActive) {
+        outcome = 'invalidated';
         _performanceTracker.recordFrameDropped();
         return;
       }
@@ -724,6 +788,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
 
       if (!_shouldPublishResult(frame, modelResult, publishAt)) {
+        outcome = 'stale';
         _performanceTracker.recordStaleResultSkipped();
         _expireOverlayIfEmergencyStale(publishAt);
         if (publishAt.difference(frame.capturedAt) >
@@ -756,6 +821,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         _scheduleOverlayEmergencyExpiration(publishAt);
       }
       publishStopwatch.stop();
+      resultPreparationMicros = publishStopwatch.elapsedMicroseconds;
+      outcome = 'success';
       _performanceTracker.recordResultPublished(
         publishStopwatch.elapsedMicroseconds,
       );
@@ -771,6 +838,52 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         _errorMessage = 'Live detection failed. Keep the camera steady.';
       }
     } finally {
+      timer?.stop();
+      if (timer != null && submitted) {
+        int? fpsIntervalMicros;
+        if (measuredResult != null &&
+            generation == _frameGeneration &&
+            _cameraController == activeController &&
+            !isCaptureWorkflowActive) {
+          final completedAt = _completionClock.elapsedMicroseconds;
+          final previous = _lastCompletionMicros;
+          if (previous != null && completedAt > previous) {
+            fpsIntervalMicros = completedAt - previous;
+          }
+          _lastCompletionMicros = completedAt;
+        }
+        final stages = measuredResult?.modelTimings;
+        final conversion = measuredResult?.conversionTiming;
+        _performanceProbe.record(
+          PerformanceMeasurement(
+            method: PerformanceScanMethod.live,
+            outcome: outcome,
+            warmUp: warmUp,
+            timestamp: frame.capturedAt,
+            completeMicros: timer.elapsedMicroseconds,
+            processingMicros: timer.elapsedMicroseconds - (queueMicros ?? 0),
+            queueMicros: queueMicros,
+            preprocessMicros: stages == null
+                ? null
+                : stages.preprocessMicros + (conversion?.totalMicros ?? 0),
+            inferenceMicros: stages?.inferenceMicros,
+            postprocessMicros: stages?.postprocessMicros,
+            conversionMicros: conversion?.rgbConversionMicros,
+            orientationMicros: conversion?.orientationMicros,
+            resultPreparationMicros: resultPreparationMicros,
+            fpsIntervalMicros: fpsIntervalMicros,
+            imageWidth: measuredResult?.imageWidth ?? frame.image.width,
+            imageHeight: measuredResult?.imageHeight ?? frame.image.height,
+            frameId: frame.id,
+            detectionCount: measuredResult?.detections.length,
+            modelConfiguration:
+                'YOLOv8n-seg;input=${AppConstants.modelInputSize};'
+                'confidence=${AppConstants.liveWeakConfidenceThreshold};'
+                'iou=${AppConstants.iouThreshold};max_detections=${AppConstants.liveMaxDetections};'
+                '${measuredResult?.backendInfo.label ?? ''};interpreter=persistent_worker',
+          ),
+        );
+      }
       if (!activeFrameCompleter.isCompleted) activeFrameCompleter.complete();
       if (!_isDisposed && _activeFrameCompleter == activeFrameCompleter) {
         _isProcessingFrame = false;
@@ -931,6 +1044,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isTorchOn = false;
     _lastTorchError = null;
     _performanceTracker.reset();
+    _completionClock.stop();
+    _lastCompletionMicros = null;
 
     if (!keepLiveState) {
       _clearLiveDetections(cancelEmergencyExpiration: true);
@@ -1088,6 +1203,7 @@ class _LiveCameraFrame {
     required this.capturedAt,
     required this.camera,
     required this.deviceOrientation,
+    this.performanceTimer,
   });
 
   final int id;
@@ -1095,6 +1211,7 @@ class _LiveCameraFrame {
   final DateTime capturedAt;
   final CameraDescription camera;
   final DeviceOrientation deviceOrientation;
+  final Stopwatch? performanceTimer;
 }
 
 class _LiveFrameTelemetry {
