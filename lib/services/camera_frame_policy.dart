@@ -1,28 +1,28 @@
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// AVFoundation orients its stream buffers; Android exposes sensor orientation.
+/// Defines platform-specific frame settings, orientation, and pixel stride.
 class CameraFramePolicy {
   CameraFramePolicy._();
 
-<<<<<<< HEAD
+  /// Keep a moderate stream resolution so live inference stays responsive.
   static ResolutionPreset liveResolution(TargetPlatform platform) =>
       ResolutionPreset.medium;
 
+  /// Cap Android capture to 15 FPS; retain the configured fallback elsewhere.
   static int liveFrameRate(
     TargetPlatform platform, {
     required int fallbackFps,
   }) => platform == TargetPlatform.android ? 15 : fallbackFps;
 
-=======
-  /// Requests BGRA buffers on iOS and YUV buffers on Android to match native formats.
->>>>>>> b4193c4035c14b52cfc422fdb83b80dab0b6627e
+  /// Requests BGRA buffers on iOS and YUV buffers on Android.
   static ImageFormatGroup imageFormat(TargetPlatform platform) =>
       platform == TargetPlatform.iOS
       ? ImageFormatGroup.bgra8888
       : ImageFormatGroup.yuv420;
 
-  /// Computes Android sensor/device rotation; iOS stream buffers are already oriented.
+  /// Android uses sensor/device rotation; iOS buffers are already oriented.
   static int rotationDegrees({
     required TargetPlatform platform,
     required CameraDescription camera,
@@ -41,7 +41,7 @@ class CameraFramePolicy {
     return (camera.sensorOrientation - deviceDegrees + 360) % 360;
   }
 
-  /// iOS does not report bytesPerPixel. BGRA has four bytes, not one.
+  /// iOS may omit bytesPerPixel; BGRA requires four bytes per pixel.
   static int pixelStride(ImageFormatGroup format, int? reportedStride) =>
       reportedStride ?? (format == ImageFormatGroup.bgra8888 ? 4 : 1);
 }

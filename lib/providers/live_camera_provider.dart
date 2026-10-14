@@ -165,14 +165,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     return _ensurePermissionAndStart(requestPermission: true);
   }
 
-<<<<<<< HEAD
+  /// Requests app settings and retries camera initialization when the app resumes.
   Future<bool> openSettings() {
-=======
-  /// Opens system app settings when camera permission cannot be requested again.
-  Future<void> openSettings() {
-    // No controller exists after permanent denial, so lifecycle cleanup alone
-    // cannot schedule recovery. Recheck access when returning from Settings.
->>>>>>> b4193c4035c14b52cfc422fdb83b80dab0b6627e
     _shouldRestoreOnResume = true;
     return openAppSettings();
   }
@@ -516,7 +510,6 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-<<<<<<< HEAD
   void _logLiveBackendInfo(LiveInferenceBackendInfo backendInfo) {
     if (kReleaseMode) return;
 
@@ -549,9 +542,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   String _formatMicros(int micros) =>
       '${(micros / Duration.microsecondsPerMillisecond).toStringAsFixed(1)}ms';
 
-=======
   /// Drops pending frames and stops streaming before the native still-photo capture.
->>>>>>> b4193c4035c14b52cfc422fdb83b80dab0b6627e
   Future<void> _pauseImageStreamForStillCapture(
     CameraController controller,
   ) async {
