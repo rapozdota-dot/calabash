@@ -102,6 +102,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _readyGraceFramesRemaining = 0;
   bool _isDisposed = false;
   bool _isAppActive = true;
+  DeviceOrientation? _previewOrientation;
 
   /// Exposes the active native camera controller for preview rendering.
   CameraController? get cameraController => _cameraController;
@@ -383,6 +384,12 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       if (permissionStatus.isGranted) {
+        // Android's permission sheet may return before the resumed callback.
+        // Defer camera acquisition; lifecycle recovery will finish this startup.
+        if (!_isAppActive) {
+          _shouldRestoreOnResume = true;
+          return;
+        }
         await _initializeCamera();
         return;
       }
@@ -414,7 +421,12 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_isDisposed || !_isAppActive) return;
 
     try {
-      final cameras = await availableCameras();
+      final cameras = await availableCameras().timeout(_cameraOperationTimeout);
+      if (_isDisposed) return;
+      if (!_isAppActive) {
+        _shouldRestoreOnResume = true;
+        return;
+      }
       if (cameras.isEmpty) {
         throw StateError('No camera is available on this device.');
       }
@@ -435,14 +447,18 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
 
       _cameraController = controller;
-      await controller.initialize();
+      _previewOrientation = controller.value.deviceOrientation;
+      controller.addListener(_handlePreviewOrientation);
+      await controller.initialize().timeout(_cameraOperationTimeout);
       if (_isDisposed || _cameraController != controller) {
         await controller.dispose();
         return;
       }
 
       try {
-        await controller.setFlashMode(FlashMode.off);
+        await controller
+            .setFlashMode(FlashMode.off)
+            .timeout(_cameraOperationTimeout);
         _isTorchOn = false;
         _lastTorchError = null;
       } catch (error) {
@@ -452,7 +468,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       unawaited(_ensureInferenceWorkerStarted());
-      await controller.startImageStream(_handleCameraFrame);
+      await controller
+          .startImageStream(_handleCameraFrame)
+          .timeout(_cameraOperationTimeout);
       if (_isDisposed || _cameraController != controller) {
         await _disposeController(controller);
         return;
@@ -467,6 +485,19 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         errorMessage: 'Camera could not be started: $error',
       );
     }
+  }
+
+  /// Discards old-coordinate masks and in-flight results when the phone rotates.
+  void _handlePreviewOrientation() {
+    final orientation = _cameraController?.value.deviceOrientation;
+    if (orientation == null || orientation == _previewOrientation) return;
+    _previewOrientation = orientation;
+    _frameGeneration++;
+    _pendingFrame = null;
+    _latestFrameSize = null;
+    _hasProcessedFrame = false;
+    _clearLiveDetections(cancelEmergencyExpiration: true);
+    _safeNotifyListeners();
   }
 
   /// Starts the background model worker and records its selected backend.
@@ -1027,6 +1058,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _releaseCameraResources({required bool keepLiveState}) async {
     _frameGeneration++;
     final controller = _cameraController;
+    controller?.removeListener(_handlePreviewOrientation);
     final inferenceWorker = _inferenceWorker;
     _cameraController = null;
     _inferenceWorker = null;
@@ -1177,6 +1209,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
         _isAppActive = false;
+        // Permission dialogs interrupt startup before a controller is created.
+        if (_isInitializingSession) _shouldRestoreOnResume = true;
         if (_cameraController != null) {
           _shouldRestoreOnResume = true;
           unawaited(_releaseCamera(keepLiveState: true));

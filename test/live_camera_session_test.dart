@@ -18,6 +18,8 @@ class _Camera extends CameraPlatform {
   bool failCapture = false;
   Completer<XFile>? pendingCapture;
   Completer<void>? releasing;
+  final orientations =
+      StreamController<DeviceOrientationChangedEvent>.broadcast();
 
   @override
   Future<List<CameraDescription>> availableCameras() async => [
@@ -55,7 +57,7 @@ class _Camera extends CameraPlatform {
       StreamController<CameraErrorEvent>().stream;
   @override
   Stream<DeviceOrientationChangedEvent> onDeviceOrientationChanged() =>
-      const Stream.empty();
+      orientations.stream;
   @override
   bool supportsImageStreaming() => true;
   @override
@@ -146,6 +148,7 @@ void main() {
   });
   tearDown(() {
     camera.frames.close();
+    camera.orientations.close();
     CameraPlatform.instance = original;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(permissionChannel, null);
@@ -216,6 +219,62 @@ void main() {
       expect(last[header.indexOf('yolo_inference_ms')], '0.001');
     },
   );
+  test('rotation updates preview without restarting the camera', () async {
+    final provider = LiveCameraProvider(workerFactory: _SlowWorker.new);
+    await provider.initialize();
+    var notifications = 0;
+    provider.addListener(() => notifications++);
+    camera.orientations.add(
+      DeviceOrientationChangedEvent(DeviceOrientation.landscapeLeft),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    expect(
+      provider.cameraController!.value.deviceOrientation,
+      DeviceOrientation.landscapeLeft,
+    );
+    expect(provider.isCameraReady, isTrue);
+    expect(provider.latestFrameSize, isNull);
+    expect(provider.liveDetections, isEmpty);
+    expect(notifications, greaterThan(0));
+    expect(camera.creations, 1);
+    provider.dispose();
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  });
+
+  for (final resumeBeforeGrant in [true, false]) {
+    test(
+      'first permission grant recovers (resume first: $resumeBeforeGrant)',
+      () async {
+        final permission = Completer<Map<int, int>>();
+        var granted = false;
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(permissionChannel, (call) async {
+              if (call.method == 'requestPermissions') return permission.future;
+              return granted ? 1 : 0;
+            });
+        final provider = LiveCameraProvider(workerFactory: _SlowWorker.new);
+        final startup = provider.initialize();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        provider.didChangeAppLifecycleState(AppLifecycleState.inactive);
+        granted = true;
+        if (resumeBeforeGrant) {
+          provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        }
+        permission.complete({1: 1}); // permission_handler camera ID.
+        await startup;
+        if (!resumeBeforeGrant) {
+          expect(camera.creations, 0);
+          provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect(provider.isCameraReady, isTrue);
+        expect(camera.creations, 1);
+        expect(provider.isCaptureWorkflowActive, isFalse);
+        provider.dispose();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      },
+    );
+  }
 
   test('TC19/59 granting permission in Settings recovers on resume', () async {
     var permission = 4; // Permanently denied.

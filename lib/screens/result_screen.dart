@@ -37,20 +37,37 @@ class ResultScreen extends StatelessWidget {
             body: SafeArea(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(AppConstants.resultPagePadding),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    DetectionImage(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final image = DetectionImage(
                       imageFile: imageFile,
                       detections: detections,
-                    ),
-                    if (provider.errorMessage != null && !provider.isBusy) ...[
-                      const SizedBox(height: AppConstants.sectionSpacing),
-                      _messageBanner(context, provider.errorMessage!),
-                    ],
-                    const SizedBox(height: AppConstants.sectionSpacing),
-                    ..._resultSections(context, provider),
-                  ],
+                    );
+                    final details = Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (provider.errorMessage != null &&
+                            !provider.isBusy) ...[
+                          const SizedBox(height: AppConstants.sectionSpacing),
+                          _messageBanner(context, provider.errorMessage!),
+                        ],
+                        const SizedBox(height: AppConstants.sectionSpacing),
+                        ..._resultSections(context, provider),
+                      ],
+                    );
+                    // Keep the photo and guidance visible together on wide screens.
+                    if (constraints.maxWidth >= 700) {
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(child: image),
+                          const SizedBox(width: AppConstants.sectionSpacing),
+                          Expanded(child: details),
+                        ],
+                      );
+                    }
+                    return Column(children: [image, details]);
+                  },
                 ),
               ),
             ),

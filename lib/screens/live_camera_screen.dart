@@ -162,6 +162,7 @@ class _LivePreview extends StatelessWidget {
               _previewSourceSize(controller) ??
               containerSize;
           final previewRect = _coverRect(sourceSize, containerSize);
+          final landscape = containerSize.width > containerSize.height;
 
           return ClipRect(
             child: Stack(
@@ -171,9 +172,8 @@ class _LivePreview extends StatelessWidget {
                   child: _FocusPreview(controller: controller),
                 ),
                 _LiveDetectionOverlay(previewRect: previewRect),
-                const _ReadinessIndicatorHost(),
-                const _LiveStatusBarHost(),
-                const _LiveCaptureControls(),
+                _ReadinessIndicatorHost(landscape: landscape),
+                _LiveCaptureControls(landscape: landscape),
               ],
             ),
           );
@@ -367,7 +367,8 @@ class _LiveDetectionOverlay extends StatelessWidget {
 }
 
 class _ReadinessIndicatorHost extends StatelessWidget {
-  const _ReadinessIndicatorHost();
+  const _ReadinessIndicatorHost({this.landscape = false});
+  final bool landscape;
 
   /// Observes just readiness and first-frame state to limit UI rebuilds.
   @override
@@ -381,11 +382,15 @@ class _ReadinessIndicatorHost extends StatelessWidget {
 
     return Positioned(
       left: AppConstants.compactCardPadding,
-      right: AppConstants.compactCardPadding,
+      right: landscape ? 144 : AppConstants.compactCardPadding,
       top: AppConstants.compactCardPadding,
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: _ReadinessIndicator(status: status, hasProcessed: hasProcessed),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _ReadinessIndicator(status: status, hasProcessed: hasProcessed),
+          const SizedBox(height: 8),
+          const _LiveStatusBarHost(),
+        ],
       ),
     );
   }
@@ -464,7 +469,8 @@ class _ReadinessIndicator extends StatelessWidget {
 }
 
 class _LiveCaptureControls extends StatelessWidget {
-  const _LiveCaptureControls();
+  const _LiveCaptureControls({this.landscape = false});
+  final bool landscape;
 
   /// Enables the shutter only when both live capture and photo analysis are idle.
   @override
@@ -481,34 +487,42 @@ class _LiveCaptureControls extends StatelessWidget {
     final isBusy = state.isCaptureWorkflowActive || isStillDetectorBusy;
 
     return Positioned(
-      left: AppConstants.compactCardPadding,
+      left: landscape ? null : AppConstants.compactCardPadding,
       right: AppConstants.compactCardPadding,
+      width: landscape ? 120 : null,
+      top: landscape ? AppConstants.compactCardPadding : null,
       bottom: AppConstants.compactCardPadding,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 160),
-            child: isBusy
-                ? const _CaptureProgressPill()
-                : const SizedBox(height: 0),
+      child: Center(
+        heightFactor: landscape ? null : 1,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 160),
+                child: isBusy
+                    ? const _CaptureProgressPill()
+                    : const SizedBox(height: 0),
+              ),
+              const SizedBox(height: 8),
+              _ShutterButton(
+                isEnabled: state.isCameraReady && !isBusy,
+                isBusy: isBusy,
+                onPressed: () => _captureAndOpenResult(context),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Capture for full analysis',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          _ShutterButton(
-            isEnabled: state.isCameraReady && !isBusy,
-            isBusy: isBusy,
-            onPressed: () => _captureAndOpenResult(context),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Capture for full analysis',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -602,12 +616,14 @@ class _CaptureProgressPill extends StatelessWidget {
               ),
             ),
             SizedBox(width: 8),
-            Text(
-              'Processing capture...',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.w800,
+            Flexible(
+              child: Text(
+                'Processing capture...',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
             ),
           ],
@@ -679,16 +695,11 @@ class _LiveStatusBarHost extends StatelessWidget {
       ),
     );
 
-    return Positioned(
-      left: AppConstants.compactCardPadding,
-      right: AppConstants.compactCardPadding,
-      top: 68,
-      child: _LiveStatusBar(
-        isProcessing: state.isProcessing,
-        hasDetections: state.hasDetections,
-        errorMessage: state.errorMessage,
-        isSlow: state.isSlow,
-      ),
+    return _LiveStatusBar(
+      isProcessing: state.isProcessing,
+      hasDetections: state.hasDetections,
+      errorMessage: state.errorMessage,
+      isSlow: state.isSlow,
     );
   }
 }

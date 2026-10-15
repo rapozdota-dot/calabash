@@ -6,6 +6,74 @@ import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'near-identical conflicting maturity predictions count as one fruit',
+    () {
+      final candidates = [
+        const Detection(
+          boundingBox: Rect.fromLTWH(.1, .1, .3, .3),
+          maturityClass: MaturityClass.mature,
+          confidence: .95,
+        ),
+        const Detection(
+          boundingBox: Rect.fromLTWH(.105, .1, .3, .3),
+          maturityClass: MaturityClass.immature,
+          confidence: .85,
+        ),
+      ];
+      expect(
+        SegmentationPostprocessor.suppressDuplicates(
+          candidates,
+          boxOf: (d) => d.boundingBox,
+          confidenceOf: (d) => d.confidence,
+          classOf: (d) => d.maturityClass.index,
+          iouThreshold: .6,
+          maxDetections: 20,
+        ),
+        [candidates.first],
+      );
+    },
+  );
+
+  test('mask support rejects sparse speckles and nonfinite crop pixels', () {
+    bool supported(Float32List logits) =>
+        SegmentationPostprocessor.hasMaskSupport(
+          logits: logits,
+          modelBox: const Rect.fromLTWH(0, 0, 640, 640),
+          modelSize: 640,
+          width: 10,
+          height: 10,
+          threshold: 0,
+          minimumPixels: 4,
+          minimumFraction: .10,
+        );
+    final sparse = Float32List(100)..fillRange(0, 4, 1);
+    expect(supported(sparse), isFalse);
+    final valid = Float32List(100)..fillRange(0, 60, 1);
+    expect(supported(valid), isTrue);
+    valid[99] = double.nan;
+    expect(supported(valid), isFalse);
+  });
+
+  test('NMS rejects invalid scores, class IDs and degenerate boxes', () {
+    final candidates = [
+      (box: const Rect.fromLTWH(0, 0, 1, 1), score: double.nan, cls: 0),
+      (box: const Rect.fromLTWH(0, 0, 1, 1), score: 1.1, cls: 0),
+      (box: const Rect.fromLTWH(0, 0, 1, 1), score: .9, cls: 3),
+      (box: const Rect.fromLTWH(0, 0, 0, 1), score: .9, cls: 0),
+    ];
+    expect(
+      SegmentationPostprocessor.suppressDuplicates(
+        candidates,
+        boxOf: (d) => d.box,
+        confidenceOf: (d) => d.score,
+        classOf: (d) => d.cls,
+        iouThreshold: .6,
+        maxDetections: 20,
+      ),
+      isEmpty,
+    );
+  });
   test('suppresses same-stage duplicates, keeps adjacent fruits', () {
     const box = Rect.fromLTWH(0.1, 0.1, 0.3, 0.3);
     const strong = Detection(

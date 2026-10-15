@@ -12,7 +12,8 @@ class AppConstants {
   static const int maxDetections = 300;
   static const double maskLogitThreshold = 0.0;
   static const int minimumMaskPixels = 4;
-  static const double minimumMaskFraction = 0.01;
+  // Sparse foreground speckles are not enough support for a segmented fruit.
+  static const double minimumMaskFraction = 0.10;
   static const double liveHighConfidenceThreshold = 0.70;
   // Share photo sensitivity; tentative live labels still need two observations.
   static const double liveWeakConfidenceThreshold = confidenceThreshold;

@@ -8,8 +8,9 @@ class SegmentationPostprocessor {
   SegmentationPostprocessor._();
 
   /// Runs class-aware non-maximum suppression: consider highest confidence first.
-  /// Suppress a box only when a kept box of the same class overlaps above the IoU limit;
-  /// stop at maxDetections. Different maturity classes are not merged by this step.
+  /// Suppress same-stage boxes overlapping above the configured IoU limit.
+  /// Near-identical boxes of different maturity stages also describe one fruit.
+  /// A stricter cross-stage limit preserves genuinely overlapping separate fruits.
   static List<T> suppressDuplicates<T>(
     List<T> candidates, {
     required Rect Function(T) boxOf,
@@ -17,17 +18,35 @@ class SegmentationPostprocessor {
     required int Function(T) classOf,
     required double iouThreshold,
     required int maxDetections,
+    double crossClassIouThreshold = 0.85,
   }) {
     final sorted = [...candidates]
       ..sort((a, b) => confidenceOf(b).compareTo(confidenceOf(a)));
     final kept = <T>[];
+    if (maxDetections <= 0) return kept;
     for (final candidate in sorted) {
-      // Overlapping boxes of different stages can belong to distinct fruits.
+      final box = boxOf(candidate);
+      final score = confidenceOf(candidate);
+      final classIndex = classOf(candidate);
+      if (!score.isFinite ||
+          score <= 0 ||
+          score > 1 ||
+          classIndex < 0 ||
+          classIndex > 2 ||
+          !box.left.isFinite ||
+          !box.top.isFinite ||
+          !box.right.isFinite ||
+          !box.bottom.isFinite ||
+          box.width <= 0 ||
+          box.height <= 0) {
+        continue;
+      }
       if (kept.any(
         (picked) =>
-            classOf(candidate) == classOf(picked) &&
-            intersectionOverUnion(boxOf(candidate), boxOf(picked)) >
-                iouThreshold,
+            intersectionOverUnion(box, boxOf(picked)) >
+            (classIndex == classOf(picked)
+                ? iouThreshold
+                : crossClassIouThreshold),
       )) {
         continue;
       }
@@ -119,17 +138,18 @@ class SegmentationPostprocessor {
   }) {
     final region = prototypeRegion(modelBox, modelSize, width, height);
     final area = (region.right - region.left) * (region.bottom - region.top);
+    if (area <= 0) return false;
     final needed = math.max(minimumPixels, (area * minimumFraction).ceil());
     var count = 0;
     for (var y = region.top; y < region.bottom; y++) {
       for (var x = region.left; x < region.right; x++) {
         final value = logits[y * width + x];
-        if (value.isFinite && value > threshold && ++count >= needed) {
-          return true;
-        }
+        // Check the whole crop, not only its first foreground pixels.
+        if (!value.isFinite) return false;
+        if (value > threshold) count++;
       }
     }
-    return false;
+    return count >= needed;
   }
 
   /// Uses a 3x3 neighbor vote to reduce isolated pixels and small holes in the binary display mask.
