@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/services/image_tensor_layout.dart';
