@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
@@ -102,6 +103,22 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _readyGraceFramesRemaining = 0;
   bool _isDisposed = false;
   bool _isAppActive = true;
+  static const _liveDiagnostics = bool.fromEnvironment(
+    'CALABASH_LIVE_DIAGNOSTICS',
+  );
+  final _startupClock = Stopwatch();
+
+  /// Opt-in release diagnostics; production builds do not emit per-frame logs.
+  void _recordLiveDiagnostic(
+    String event, [
+    Map<String, Object?> details = const {},
+  ]) {
+    if (!_liveDiagnostics) return;
+    debugPrint(
+      'CALABASH_LIVE ${jsonEncode({'event': event, 'elapsed_us': _startupClock.elapsedMicroseconds, ...details})}',
+    );
+  }
+
   DeviceOrientation? _previewOrientation;
 
   /// Exposes the active native camera controller for preview rendering.
@@ -124,6 +141,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Distinguishes startup from a completed inference with zero detections.
   bool get hasProcessedFrame => _hasProcessedFrame;
+
+  /// Distinguishes model loading from a completed search with no detections.
+  bool get isInferenceReady => _inferenceWorker?.isReady == true;
 
   /// Exposes the last successfully applied flashlight state.
   bool get isTorchOn => _isTorchOn;
@@ -416,9 +436,19 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Selects a rear camera, applies the platform frame format, and starts streaming.
   /// The inference worker starts separately so preview startup need not wait for benchmarking.
   Future<void> _initializeCamera() async {
+    if (_liveDiagnostics) {
+      _startupClock
+        ..reset()
+        ..start();
+    }
+    _recordLiveDiagnostic('session_start');
     _setStatus(LiveCameraStatus.initializingCamera);
     await _releaseCamera(keepLiveState: true);
     if (_isDisposed || !_isAppActive) return;
+
+    // Model loading and native camera setup can run concurrently. Neither needs
+    // a frame from the other, and inference still waits until the worker is ready.
+    unawaited(_ensureInferenceWorkerStarted());
 
     try {
       final cameras = await availableCameras().timeout(_cameraOperationTimeout);
@@ -467,7 +497,6 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
 
-      unawaited(_ensureInferenceWorkerStarted());
       await controller
           .startImageStream(_handleCameraFrame)
           .timeout(_cameraOperationTimeout);
@@ -478,6 +507,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       _errorMessage = null;
       _setStatus(LiveCameraStatus.cameraReady);
+      _recordLiveDiagnostic('camera_ready');
     } catch (error) {
       await _releaseCamera(keepLiveState: true);
       _setStatus(
@@ -524,6 +554,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     _inferenceWorker = worker;
     try {
       await worker.start();
+      _recordLiveDiagnostic('model_ready', {
+        'backend': worker.backendInfo?.label,
+      });
       if (_isDisposed || _inferenceWorker != worker) {
         await worker.dispose();
         return;
@@ -854,6 +887,14 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       publishStopwatch.stop();
       resultPreparationMicros = publishStopwatch.elapsedMicroseconds;
       outcome = 'success';
+      _recordLiveDiagnostic('result_ready', {
+        'frame_id': frame.id,
+        'processing_us': _lastProcessingTime.inMicroseconds,
+        'inference_us': modelResult.modelTimings.inferenceMicros,
+        'conversion_us': modelResult.conversionTiming.totalMicros,
+        'raw_detections': detections.length,
+        'visible_detections': _liveDetections.length,
+      });
       _performanceTracker.recordResultPublished(
         publishStopwatch.elapsedMicroseconds,
       );

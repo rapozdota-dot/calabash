@@ -80,6 +80,9 @@ class CameraImageConverter {
     }
 
     final image = img.Image(width: width, height: height, numChannels: 3);
+    // This image owns tightly packed uint8 RGB bytes. Writing the backing buffer
+    // avoids a pixel setter and coordinate lookup for every camera pixel.
+    final rgb = image.data!.buffer.asUint8List();
     final yPlane = planes[0];
     final uPlane = planes[1];
     final vPlane = planes[2];
@@ -104,7 +107,10 @@ class CameraImageConverter {
         );
         final blue = _clampToByte(yValue + (1.772 * uValue));
 
-        image.setPixelRgb(x, y, red, green, blue);
+        final rgbOffset = (y * width + x) * 3;
+        rgb[rgbOffset] = red;
+        rgb[rgbOffset + 1] = green;
+        rgb[rgbOffset + 2] = blue;
       }
     }
 
@@ -127,6 +133,7 @@ class CameraImageConverter {
       plane.bytesPerPixel,
     );
     final image = img.Image(width: width, height: height, numChannels: 3);
+    final rgb = image.data!.buffer.asUint8List();
 
     for (var y = 0; y < height; y++) {
       final rowOffset = y * plane.bytesPerRow;
@@ -135,7 +142,10 @@ class CameraImageConverter {
         final blue = plane.bytes[pixelOffset];
         final green = plane.bytes[pixelOffset + 1];
         final red = plane.bytes[pixelOffset + 2];
-        image.setPixelRgb(x, y, red, green, blue);
+        final rgbOffset = (y * width + x) * 3;
+        rgb[rgbOffset] = red;
+        rgb[rgbOffset + 1] = green;
+        rgb[rgbOffset + 2] = blue;
       }
     }
 

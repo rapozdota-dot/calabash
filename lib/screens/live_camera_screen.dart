@@ -379,6 +379,9 @@ class _ReadinessIndicatorHost extends StatelessWidget {
     final hasProcessed = context.select<LiveCameraProvider, bool>(
       (provider) => provider.hasProcessedFrame,
     );
+    final modelReady = context.select<LiveCameraProvider, bool>(
+      (provider) => provider.isInferenceReady,
+    );
 
     return Positioned(
       left: AppConstants.compactCardPadding,
@@ -387,7 +390,11 @@ class _ReadinessIndicatorHost extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _ReadinessIndicator(status: status, hasProcessed: hasProcessed),
+          _ReadinessIndicator(
+            status: status,
+            hasProcessed: hasProcessed,
+            modelReady: modelReady,
+          ),
           const SizedBox(height: 8),
           const _LiveStatusBarHost(),
         ],
@@ -397,10 +404,15 @@ class _ReadinessIndicatorHost extends StatelessWidget {
 }
 
 class _ReadinessIndicator extends StatelessWidget {
-  const _ReadinessIndicator({required this.status, required this.hasProcessed});
+  const _ReadinessIndicator({
+    required this.status,
+    required this.hasProcessed,
+    required this.modelReady,
+  });
 
   final LiveStabilityStatus status;
   final bool hasProcessed;
+  final bool modelReady;
 
   /// Displays looking, no-calabash, hold-steady, or capture-ready guidance.
   @override
@@ -416,7 +428,9 @@ class _ReadinessIndicator extends StatelessWidget {
       LiveStabilityStatus.holdSteady => Icons.pan_tool_alt_rounded,
       LiveStabilityStatus.ready => Icons.check_circle_rounded,
     };
-    final label = !hasProcessed
+    final label = !modelReady
+        ? 'Starting fruit detection...'
+        : !hasProcessed
         ? 'Looking for calabash...'
         : switch (status) {
             LiveStabilityStatus.noCalabashDetected =>

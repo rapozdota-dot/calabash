@@ -408,19 +408,27 @@ class LiveInferenceBackendPolicy {
   LiveInferenceBackendPolicy._();
 
   static const androidPreferred = TfliteBackendConfig(
-    kind: TfliteBackendKind.nnapi,
-    label: 'NNAPI',
-    threads: 2,
+    kind: TfliteBackendKind.xnnpack,
+    label: 'XNNPACK CPU',
+    threads: 4,
   );
 
   static TfliteBackendConfig? preferredQuickBackend({
     required bool isAndroid,
     TfliteBackendConfig? cachedConfig,
+    int processorCount = 8,
   }) {
     if (!isAndroid || cachedConfig?.cacheKey == androidPreferred.cacheKey) {
       return null;
     }
-    return androidPreferred;
+    final threads = math.max(2, math.min(4, processorCount ~/ 2));
+    return threads == 4
+        ? androidPreferred
+        : TfliteBackendConfig(
+            kind: TfliteBackendKind.xnnpack,
+            label: 'XNNPACK CPU',
+            threads: threads,
+          );
   }
 
   static List<TfliteBackendConfig> fallbackBackends({
@@ -549,7 +557,7 @@ class _LiveInferenceWorkerDisposed {
 /// Pixel conversion and model processing run here rather than blocking the live UI isolate.
 Future<void> _liveInferenceWorkerMain(_LiveInferenceWorkerInit init) async {
   final commandPort = ReceivePort();
-  final runtime = _LiveInferenceWorkerRuntime();
+  final runtime = LiveInferenceWorkerRuntime();
 
   try {
     final modelBytes = init.modelBytes.materialize().asUint8List();
@@ -600,157 +608,93 @@ Future<void> _liveInferenceWorkerMain(_LiveInferenceWorkerInit init) async {
   }
 }
 
-class _LiveInferenceWorkerRuntime {
+/// Owns one serial interpreter. Startup never runs synthetic inference benchmarks.
+class LiveInferenceWorkerRuntime {
+  LiveInferenceWorkerRuntime({
+    ModelService Function(Uint8List, TfliteBackendConfig)? modelServiceFactory,
+    bool? isAndroid,
+    int? processorCount,
+  }) : _modelServiceFactory = modelServiceFactory ?? _createModelService,
+       _isAndroid = isAndroid ?? Platform.isAndroid,
+       _processorCount = processorCount ?? Platform.numberOfProcessors;
+
+  final ModelService Function(Uint8List, TfliteBackendConfig)
+  _modelServiceFactory;
+  final bool _isAndroid;
+  final int _processorCount;
   ModelService? _modelService;
   LiveInferenceBackendInfo? _backendInfo;
 
-  /// Tries a cached backend first, otherwise benchmarks compatible backends.
-  /// Retains the fastest successful interpreter and disposes unsuccessful/slower alternatives.
+  /// Builds the same model pipeline and thresholds used before startup tuning.
+  static ModelService _createModelService(
+    Uint8List bytes,
+    TfliteBackendConfig config,
+  ) => ModelService(
+    modelBuffer: bytes,
+    backendConfig: config,
+    confidenceThreshold: AppConstants.liveWeakConfidenceThreshold,
+    maxDetections: AppConstants.liveMaxDetections,
+  );
+
+  /// Loads the first compatible backend and immediately accepts real camera frames.
+  /// NNAPI compilation and benchmark loops must not delay first detection.
+  /// Attempt timing fields stay zero because no synthetic inference is measured.
   Future<LiveInferenceBackendInfo> initialize({
     required Uint8List modelBytes,
     required TfliteBackendConfig? cachedBackendConfig,
   }) async {
-    final cachedConfig = cachedBackendConfig;
-    if (cachedConfig != null) {
-      final cachedAttempt = await _tryBackend(
-        modelBytes: modelBytes,
-        config: cachedConfig,
-        warmupRuns: 1,
-        measuredRuns: 1,
-      );
-      if (cachedAttempt.service != null) {
-        _modelService = cachedAttempt.service;
-        _backendInfo = LiveInferenceBackendInfo(
-          selectedConfig: cachedConfig,
-          attempts: [cachedAttempt.benchmark],
-          fromCache: true,
-        );
-        return _backendInfo!;
-      }
-    }
-
+    final preferred = LiveInferenceBackendPolicy.preferredQuickBackend(
+      isAndroid: _isAndroid,
+      processorCount: _processorCount,
+    );
+    final configs = <TfliteBackendConfig>[
+      if (cachedBackendConfig != null &&
+          (!cachedBackendConfig.isAndroidOnly || _isAndroid))
+        cachedBackendConfig,
+      ?preferred,
+      ...LiveInferenceBackendPolicy.fallbackBackends(
+        isAndroid: _isAndroid,
+        processorCount: _processorCount,
+      ),
+    ];
+    final seen = <String>{};
     final attempts = <TfliteBackendBenchmark>[];
-    final preferredConfig = LiveInferenceBackendPolicy.preferredQuickBackend(
-      isAndroid: Platform.isAndroid,
-      cachedConfig: cachedConfig,
-    );
-    if (preferredConfig != null) {
-      final preferredAttempt = await _tryBackend(
-        modelBytes: modelBytes,
-        config: preferredConfig,
-        warmupRuns: 1,
-        measuredRuns: 1,
-      );
-      attempts.add(preferredAttempt.benchmark);
-      if (preferredAttempt.service != null) {
-        _modelService = preferredAttempt.service;
-        _backendInfo = LiveInferenceBackendInfo(
-          selectedConfig: preferredConfig,
+    for (final config in configs) {
+      if (!seen.add(config.cacheKey)) continue;
+      final service = _modelServiceFactory(modelBytes, config);
+      try {
+        await service.loadModel();
+        attempts.add(_startupAttempt(config, initialized: true));
+        _modelService = service;
+        return _backendInfo = LiveInferenceBackendInfo(
+          selectedConfig: config,
           attempts: attempts,
-          fromCache: false,
+          fromCache: config.cacheKey == cachedBackendConfig?.cacheKey,
         );
-        return _backendInfo!;
-      }
-    }
-
-    _BackendAttempt? bestAttempt;
-
-    for (final config in LiveInferenceBackendPolicy.fallbackBackends(
-      isAndroid: Platform.isAndroid,
-      processorCount: Platform.numberOfProcessors,
-      cachedConfig: cachedConfig,
-      excludedCacheKeys: {
-        if (preferredConfig != null) preferredConfig.cacheKey,
-      },
-    )) {
-      final attempt = await _tryBackend(
-        modelBytes: modelBytes,
-        config: config,
-        warmupRuns: 1,
-        measuredRuns: 1,
-      );
-      attempts.add(attempt.benchmark);
-
-      final service = attempt.service;
-      if (service == null) {
-        continue;
-      }
-
-      if (bestAttempt == null ||
-          attempt.benchmark.averageMicros <
-              bestAttempt.benchmark.averageMicros) {
-        bestAttempt?.service?.dispose();
-        bestAttempt = attempt;
-      } else {
+      } catch (error) {
         service.dispose();
+        attempts.add(_startupAttempt(config, initialized: false, error: error));
       }
     }
-
-    if (bestAttempt == null) {
-      throw StateError(
-        'No compatible TensorFlow Lite backend initialized for live inference.',
-      );
-    }
-
-    _modelService = bestAttempt.service;
-    _backendInfo = LiveInferenceBackendInfo(
-      selectedConfig: bestAttempt.benchmark.config,
-      attempts: attempts,
-      fromCache: false,
+    throw StateError(
+      'No compatible TensorFlow Lite backend initialized for live inference. ${attempts.map((a) => a.errorMessage).join('; ')}',
     );
-    return _backendInfo!;
   }
 
-  /// Loads and benchmarks one delegate configuration without aborting other attempts on failure.
-  Future<_BackendAttempt> _tryBackend({
-    required Uint8List modelBytes,
-    required TfliteBackendConfig config,
-    required int warmupRuns,
-    required int measuredRuns,
-  }) async {
-    if (config.isAndroidOnly && !Platform.isAndroid) {
-      return _BackendAttempt(
-        benchmark: TfliteBackendBenchmark(
-          config: config,
-          initialized: false,
-          warmupMicros: 0,
-          averageMicros: 0,
-          minMicros: 0,
-          maxMicros: 0,
-          errorMessage: 'Backend is Android-only on this package.',
-        ),
-      );
-    }
-
-    final service = ModelService(
-      // Backends only read these weights; avoid a full Dart-side copy per attempt.
-      modelBuffer: modelBytes,
-      backendConfig: config,
-      confidenceThreshold: AppConstants.liveWeakConfidenceThreshold,
-      maxDetections: AppConstants.liveMaxDetections,
-    );
-
-    try {
-      final benchmark = await service.benchmarkInference(
-        warmupRuns: warmupRuns,
-        measuredRuns: measuredRuns,
-      );
-      return _BackendAttempt(service: service, benchmark: benchmark);
-    } catch (error) {
-      service.dispose();
-      return _BackendAttempt(
-        benchmark: TfliteBackendBenchmark(
-          config: config,
-          initialized: false,
-          warmupMicros: 0,
-          averageMicros: 0,
-          minMicros: 0,
-          maxMicros: 0,
-          errorMessage: error.toString(),
-        ),
-      );
-    }
-  }
+  /// Records compatibility only; zeros mean benchmark timings were not measured.
+  TfliteBackendBenchmark _startupAttempt(
+    TfliteBackendConfig config, {
+    required bool initialized,
+    Object? error,
+  }) => TfliteBackendBenchmark(
+    config: config,
+    initialized: initialized,
+    warmupMicros: 0,
+    averageMicros: 0,
+    minMicros: 0,
+    maxMicros: 0,
+    errorMessage: error?.toString(),
+  );
 
   /// Converts and orients the transferred frame, runs the shared model pipeline, and packages timings.
   Future<LiveInferenceResult> detect(LiveInferenceFrame frame) async {
@@ -787,11 +731,4 @@ class _LiveInferenceWorkerRuntime {
     _modelService?.dispose();
     _modelService = null;
   }
-}
-
-class _BackendAttempt {
-  const _BackendAttempt({this.service, required this.benchmark});
-
-  final ModelService? service;
-  final TfliteBackendBenchmark benchmark;
 }
