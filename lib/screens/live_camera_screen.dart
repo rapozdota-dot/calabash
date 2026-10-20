@@ -14,13 +14,16 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 class LiveCameraScreen extends StatelessWidget {
-  const LiveCameraScreen({super.key});
+  const LiveCameraScreen({super.key, this.providerFactory});
+
+  final LiveCameraProvider Function()? providerFactory;
 
   /// Owns a camera-session provider scoped to this screen and starts initialization.
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (_) => LiveCameraProvider()..initialize(),
+      create: (_) =>
+          (providerFactory?.call() ?? LiveCameraProvider())..initialize(),
       child: const _LiveCameraView(),
     );
   }
@@ -39,9 +42,23 @@ class _LiveCameraView extends StatelessWidget {
       (provider) => provider.errorMessage,
     );
 
+    final landscape =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
     return Scaffold(
+      backgroundColor: Colors.black,
       appBar: AppBar(
         title: const Text('Live Detection'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        toolbarHeight: landscape ? 44 : 56,
+        titleTextStyle: Theme.of(context).textTheme.titleLarge?.copyWith(
+          color: Colors.white,
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
+        ),
+        systemOverlayStyle: SystemUiOverlayStyle.light,
         actions: const [_TorchAction()],
       ),
       body: SafeArea(child: _bodyFor(context, status, errorMessage)),
@@ -102,6 +119,7 @@ class _TorchAction extends StatelessWidget {
     );
 
     return IconButton(
+      disabledColor: Colors.white38,
       tooltip: state.isTorchOn ? 'Turn flashlight off' : 'Turn flashlight on',
       onPressed: state.isCameraReady && !state.isSettingTorch
           ? () => _toggleTorch(context)
@@ -142,54 +160,62 @@ class _LivePreview extends StatelessWidget {
     final controller = context.select<LiveCameraProvider, CameraController?>(
       (provider) => provider.cameraController,
     );
-    final latestFrameSize = context.select<LiveCameraProvider, Size?>(
-      (provider) => provider.latestFrameSize,
-    );
     if (controller == null || !controller.value.isInitialized) {
       return const _LiveLoadingState();
     }
 
-    return Container(
-      color: Colors.black,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final containerSize = Size(
-            constraints.maxWidth,
-            constraints.maxHeight,
-          );
-          final sourceSize =
-              latestFrameSize ??
-              _previewSourceSize(controller) ??
-              containerSize;
-          final previewRect = _coverRect(sourceSize, containerSize);
-          final landscape = containerSize.width > containerSize.height;
+    // CameraPreview listens to CameraValue itself. Its enclosing geometry must
+    // follow the same notifications, even when no inference result has arrived.
+    return ValueListenableBuilder<CameraValue>(
+      valueListenable: controller,
+      builder: (context, value, _) => Container(
+        color: Colors.black,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final containerSize = Size(
+              constraints.maxWidth,
+              constraints.maxHeight,
+            );
+            final sourceSize = _previewSourceSize(value) ?? containerSize;
+            final previewRect = _coverRect(sourceSize, containerSize);
+            final landscape =
+                MediaQuery.orientationOf(context) == Orientation.landscape;
 
-          return ClipRect(
-            child: Stack(
-              children: [
-                Positioned.fromRect(
-                  rect: previewRect,
-                  child: _FocusPreview(controller: controller),
-                ),
-                _LiveDetectionOverlay(previewRect: previewRect),
-                _ReadinessIndicatorHost(landscape: landscape),
-                _LiveCaptureControls(landscape: landscape),
-              ],
-            ),
-          );
-        },
+            return ClipRect(
+              child: Stack(
+                children: [
+                  Positioned.fromRect(
+                    rect: previewRect,
+                    child: _FocusPreview(
+                      key: const ValueKey('live-camera-preview'),
+                      controller: controller,
+                    ),
+                  ),
+                  _LiveDetectionOverlay(previewRect: previewRect),
+                  _ReadinessIndicatorHost(landscape: landscape),
+                  _LiveCaptureControls(landscape: landscape),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
 
   /// Determines preview dimensions from camera orientation before inference supplies a frame size.
-  Size? _previewSourceSize(CameraController controller) {
-    final previewSize = controller.value.previewSize;
+  Size? _previewSourceSize(CameraValue value) {
+    final previewSize = value.previewSize;
     if (previewSize == null) {
       return null;
     }
 
-    final orientation = controller.value.deviceOrientation;
+    // Match the camera plugin's applicable preview orientation exactly.
+    final orientation = value.isRecordingVideo
+        ? value.recordingOrientation!
+        : value.previewPauseOrientation ??
+              value.lockedCaptureOrientation ??
+              value.deviceOrientation;
     final isPortrait =
         orientation == DeviceOrientation.portraitUp ||
         orientation == DeviceOrientation.portraitDown;
@@ -223,7 +249,7 @@ class _LivePreview extends StatelessWidget {
 }
 
 class _FocusPreview extends StatefulWidget {
-  const _FocusPreview({required this.controller});
+  const _FocusPreview({super.key, required this.controller});
   final CameraController controller;
 
   /// Creates state for the temporary tap-to-focus indicator.
@@ -835,7 +861,7 @@ class _LiveLoadingState extends StatelessWidget {
           SizedBox(height: AppConstants.sectionSpacing),
           Text(
             'Starting live detection...',
-            style: TextStyle(fontWeight: FontWeight.w800),
+            style: TextStyle(fontWeight: FontWeight.w800, color: Colors.white),
           ),
         ],
       ),
@@ -870,9 +896,10 @@ class _PermissionMessage extends StatelessWidget {
             Text(
               title,
               textAlign: TextAlign.center,
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w900,
+                color: Colors.white,
+              ),
             ),
             const SizedBox(height: AppConstants.sectionSpacing),
             ElevatedButton(onPressed: onPressed, child: Text(buttonLabel)),
