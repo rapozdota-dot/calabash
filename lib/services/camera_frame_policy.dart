@@ -9,11 +9,11 @@ class CameraFramePolicy {
   static ResolutionPreset liveResolution(TargetPlatform platform) =>
       ResolutionPreset.medium;
 
-  /// Cap Android capture to 15 FPS; retain the configured fallback elsewhere.
+  /// Keep preview smooth; the inference queue independently retains only one frame.
   static int liveFrameRate(
     TargetPlatform platform, {
     required int fallbackFps,
-  }) => platform == TargetPlatform.android ? 15 : fallbackFps;
+  }) => fallbackFps;
 
   /// Requests BGRA buffers on iOS and YUV buffers on Android.
   static ImageFormatGroup imageFormat(TargetPlatform platform) =>

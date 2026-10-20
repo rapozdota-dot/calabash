@@ -3,16 +3,16 @@ import 'package:calabash_maturity_detection/services/model_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('prefers NNAPI first on Android when no cached backend exists', () {
+  test('prefers four-thread XNNPACK for fast Android startup', () {
     final preferred = LiveInferenceBackendPolicy.preferredQuickBackend(
       isAndroid: true,
     );
 
     expect(preferred, isNotNull);
-    expect(preferred!.kind, TfliteBackendKind.nnapi);
+    expect(preferred!.kind, TfliteBackendKind.xnnpack);
   });
 
-  test('keeps CPU fallback candidates after Android NNAPI', () {
+  test('keeps CPU fallback candidates after XNNPACK', () {
     final fallbacks = LiveInferenceBackendPolicy.fallbackBackends(
       isAndroid: true,
       processorCount: 8,
@@ -26,7 +26,7 @@ void main() {
     expect(
       fallbacks.any(
         (config) =>
-            config.kind == TfliteBackendKind.nnapi &&
+            config.kind == TfliteBackendKind.xnnpack &&
             config.threads ==
                 LiveInferenceBackendPolicy.androidPreferred.threads,
       ),
@@ -34,7 +34,7 @@ void main() {
     );
   });
 
-  test('does not select Android-only NNAPI as preferred off Android', () {
+  test('does not change the preferred backend off Android', () {
     expect(
       LiveInferenceBackendPolicy.preferredQuickBackend(isAndroid: false),
       isNull,

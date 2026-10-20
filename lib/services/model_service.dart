@@ -1,9 +1,11 @@
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/services/image_tensor_layout.dart';
 import 'package:calabash_maturity_detection/services/segmentation_postprocessor.dart';
+import 'package:calabash_maturity_detection/services/tensor_buffer_transfer.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -576,9 +578,19 @@ class ModelService {
   /// Both segmentation outputs are collected: detection channels and mask prototypes.
   int _runInference(_ModelTensorWorkspace workspace) {
     final stopwatch = Stopwatch()..start();
-    _interpreter!.runForMultipleInputs([
-      workspace.inputTensor,
-    ], workspace.rawOutputs);
+    final interpreter = _interpreter!;
+    // The validated, fixed-size interpreter is already allocated. Avoid the
+    // plugin's ByteBuffer copyTo path, which writes output one byte at a time.
+    interpreter.getInputTensor(0).data = workspace.inputBuffer.buffer
+        .asUint8List();
+    interpreter.invoke();
+    for (final output in workspace.rawOutputs.entries) {
+      // Native output is volatile: bulk-copy it before the next invocation.
+      TensorBufferTransfer.copyExact(
+        interpreter.getOutputTensor(output.key).data,
+        output.value as ByteBuffer,
+      );
+    }
     stopwatch.stop();
     return stopwatch.elapsedMicroseconds;
   }
