@@ -79,14 +79,15 @@ class LiveDetectionTracker {
     }
 
     final oldTracks = List<_StableDetectionTrack>.of(_tracks);
-    final usedTrackIndexes = <int>{};
+    final matches = _matchTracks(detections, oldTracks);
     final updatedTracks = <_StableDetectionTrack>[];
     final liveDetections = <LiveDetection>[];
     var matchedTrackCount = 0;
     var createdTrackCount = 0;
 
-    for (final detection in detections) {
-      final match = _findBestTrackMatch(detection, oldTracks, usedTrackIndexes);
+    for (var index = 0; index < detections.length; index++) {
+      final detection = detections[index];
+      final match = matches[index];
 
       late final _StableDetectionTrack track;
       late final bool animateBounds;
@@ -116,7 +117,6 @@ class LiveDetectionTracker {
               _confidenceTierFor(detection.confidence) ==
               LiveConfidenceTier.normal,
         );
-        usedTrackIndexes.add(match.trackIndex);
         matchedTrackCount++;
       }
 
@@ -144,7 +144,7 @@ class LiveDetectionTracker {
       );
     }
 
-    final removedTrackCount = oldTracks.length - usedTrackIndexes.length;
+    final removedTrackCount = oldTracks.length - matches.length;
     _tracks
       ..clear()
       ..addAll(updatedTracks);
@@ -165,62 +165,86 @@ class LiveDetectionTracker {
     return hadTracks;
   }
 
-  /// Finds an unused prior track using overlap, center distance, and compatible area.
-  _TrackMatch? _findBestTrackMatch(
-    Detection detection,
+  /// Reserves strongest spatial pairs first, independently of prediction order.
+  /// Previously, a high-confidence neighbor could steal an exact match and its
+  /// stored maturity label. Class is deliberately not used for association: a
+  /// fruit's stage may fluctuate, but it must not inherit a neighbor's history.
+  Map<int, _TrackMatch> _matchTracks(
+    List<Detection> detections,
     List<_StableDetectionTrack> tracks,
-    Set<int> usedTrackIndexes,
   ) {
-    _TrackMatch? bestMatch;
-    var bestScore = 0.0;
-
-    for (var index = 0; index < tracks.length; index++) {
-      if (usedTrackIndexes.contains(index)) {
-        continue;
-      }
-
-      final track = tracks[index];
-      final iou = _iou(detection.boundingBox, track.boundingBox);
-      final centerDistance = _centerDistance(
-        detection.boundingBox,
-        track.boundingBox,
-      );
-      final areaRatio =
-          math.min(
-            detection.boundingBox.width * detection.boundingBox.height,
-            track.boundingBox.width * track.boundingBox.height,
-          ) /
-          math.max(
-            detection.boundingBox.width * detection.boundingBox.height,
-            track.boundingBox.width * track.boundingBox.height,
-          );
-      final diagonal = math.sqrt(
-        track.boundingBox.width * track.boundingBox.width +
-            track.boundingBox.height * track.boundingBox.height,
-      );
-      final matchRadius = math.min(
-        AppConstants.liveTrackCenterDistanceThreshold,
-        diagonal * 0.35,
-      );
-      final centerScore = matchRadius > 0
-          ? math.max(0.0, 1.0 - centerDistance / matchRadius)
-          : 0.0;
-      final score = 0.75 * iou + 0.25 * centerScore;
-
-      if (score > bestScore &&
-          areaRatio >= 0.35 &&
-          (iou >= AppConstants.liveTrackIouThreshold ||
-              centerDistance <= matchRadius)) {
-        bestScore = score;
-        bestMatch = _TrackMatch(
-          trackIndex: index,
-          iou: iou,
-          centerDistance: centerDistance,
+    final pairs = <_TrackMatch>[];
+    for (
+      var detectionIndex = 0;
+      detectionIndex < detections.length;
+      detectionIndex++
+    ) {
+      final detection = detections[detectionIndex];
+      for (var index = 0; index < tracks.length; index++) {
+        final track = tracks[index];
+        final iou = _iou(detection.boundingBox, track.boundingBox);
+        final centerDistance = _centerDistance(
+          detection.boundingBox,
+          track.boundingBox,
         );
+        final areaRatio =
+            math.min(
+              detection.boundingBox.width * detection.boundingBox.height,
+              track.boundingBox.width * track.boundingBox.height,
+            ) /
+            math.max(
+              detection.boundingBox.width * detection.boundingBox.height,
+              track.boundingBox.width * track.boundingBox.height,
+            );
+        final diagonal = math.sqrt(
+          track.boundingBox.width * track.boundingBox.width +
+              track.boundingBox.height * track.boundingBox.height,
+        );
+        final matchRadius = math.min(
+          AppConstants.liveTrackCenterDistanceThreshold,
+          diagonal * 0.35,
+        );
+        final centerScore = matchRadius > 0
+            ? math.max(0.0, 1.0 - centerDistance / matchRadius)
+            : 0.0;
+        final score = 0.75 * iou + 0.25 * centerScore;
+
+        if (score > 0 &&
+            areaRatio >= 0.35 &&
+            (iou >= AppConstants.liveTrackIouThreshold ||
+                centerDistance <= matchRadius)) {
+          pairs.add(
+            _TrackMatch(
+              detectionIndex: detectionIndex,
+              trackIndex: index,
+              score: score,
+              centerDistance: centerDistance,
+            ),
+          );
+        }
       }
     }
-
-    return bestMatch;
+    pairs.sort((a, b) {
+      final byScore = b.score.compareTo(a.score);
+      if (byScore != 0) return byScore;
+      final byDistance = a.centerDistance.compareTo(b.centerDistance);
+      if (byDistance != 0) return byDistance;
+      final byTrack = a.trackIndex.compareTo(b.trackIndex);
+      return byTrack != 0
+          ? byTrack
+          : a.detectionIndex.compareTo(b.detectionIndex);
+    });
+    final matches = <int, _TrackMatch>{};
+    final usedTracks = <int>{};
+    for (final pair in pairs) {
+      if (matches.containsKey(pair.detectionIndex) ||
+          usedTracks.contains(pair.trackIndex)) {
+        continue;
+      }
+      matches[pair.detectionIndex] = pair;
+      usedTracks.add(pair.trackIndex);
+    }
+    return matches;
   }
 
   /// Allows interpolation only for small movements, avoiding sliding masks across large jumps.
@@ -325,13 +349,15 @@ class LiveDetectionTracker {
 
 class _TrackMatch {
   const _TrackMatch({
+    required this.detectionIndex,
     required this.trackIndex,
-    required this.iou,
+    required this.score,
     required this.centerDistance,
   });
 
+  final int detectionIndex;
   final int trackIndex;
-  final double iou;
+  final double score;
   final double centerDistance;
 }
 

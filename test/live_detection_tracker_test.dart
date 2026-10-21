@@ -6,6 +6,100 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('nearby mixed-stage fruits do not steal each other tracks', () {
+    final tracker = LiveDetectionTracker(confirmationFrames: 1);
+    final initial = tracker.update([
+      _detection(left: 0.10, top: 0.10),
+      _detection(
+        left: 0.25,
+        top: 0.10,
+        maturityClass: MaturityClass.overmature,
+      ),
+    ]);
+    // The first candidate overlaps its neighbor more than its own old box.
+    // The unchanged neighbor must claim its exact match before that candidate.
+    final next = tracker.update([
+      _detection(left: 0.19, top: 0.10),
+      _detection(
+        left: 0.25,
+        top: 0.10,
+        maturityClass: MaturityClass.overmature,
+      ),
+    ]);
+    expect(next.detections[0].trackId, initial.detections[0].trackId);
+    expect(next.detections[1].trackId, initial.detections[1].trackId);
+    expect(next.detections[0].detection.maturityClass, MaturityClass.mature);
+    expect(
+      next.detections[1].detection.maturityClass,
+      MaturityClass.overmature,
+    );
+    expect(next.createdTrackCount, 0);
+  });
+
+  test('strongest spatial pairing is independent of candidate order', () {
+    for (final reversed in [false, true]) {
+      final tracker = LiveDetectionTracker(confirmationFrames: 1);
+      final first = tracker.update([
+        _detection(left: 0.10, top: 0.10),
+        _detection(
+          left: 0.25,
+          top: 0.10,
+          maturityClass: MaturityClass.overmature,
+        ),
+      ]);
+      final candidates = [
+        _detection(left: 0.19, top: 0.10),
+        _detection(
+          left: 0.25,
+          top: 0.10,
+          maturityClass: MaturityClass.overmature,
+        ),
+      ];
+      final result = tracker.update(
+        reversed ? candidates.reversed.toList() : candidates,
+      );
+      for (final live in result.detections) {
+        final isMature = live.detection.boundingBox.left == 0.19;
+        expect(live.trackId, first.detections[isMature ? 0 : 1].trackId);
+        expect(
+          live.detection.maturityClass,
+          isMature ? MaturityClass.mature : MaturityClass.overmature,
+        );
+      }
+      expect(result.matchedTrackCount, 2);
+      expect(result.removedTrackCount, 0);
+    }
+  });
+
+  test(
+    'overmature fruit remains visible beside a stronger mature prediction',
+    () {
+      final tracker = LiveDetectionTracker();
+      for (var frame = 0; frame < 4; frame++) {
+        final result = tracker.update([
+          _detection(left: 0.1, top: 0.1, confidence: 0.99),
+          _detection(
+            left: 0.6,
+            top: 0.1,
+            confidence: 0.47,
+            maturityClass: MaturityClass.overmature,
+          ),
+        ]);
+        if (frame == 0) continue;
+        expect(result.detections, hasLength(2));
+        expect(
+          result.detections[0].detection.maturityClass,
+          MaturityClass.mature,
+        );
+        expect(
+          result.detections[1].detection.maturityClass,
+          MaturityClass.overmature,
+        );
+        expect(result.detections[1].confidenceTier, LiveConfidenceTier.weak);
+      }
+    },
+  );
+
   test('alternating maturity does not hide a repeatedly localized fruit', () {
     final tracker = LiveDetectionTracker();
     for (var i = 0; i < 8; i++) {
