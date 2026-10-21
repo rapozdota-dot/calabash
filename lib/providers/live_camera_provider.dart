@@ -77,7 +77,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   int? _lastPublishedFrameId;
   DateTime? _lastInferenceStartedAt;
   DateTime? _lastDetectionPublishedAt;
-  String? _errorMessage;
+  String? _cameraErrorMessage;
+  String? _inferenceErrorMessage;
   bool _isInitializingSession = false;
   Future<void>? _workerStarting;
   Future<void>? _cameraRelease;
@@ -134,7 +135,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   Size? get latestFrameSize => _latestFrameSize;
 
   /// Exposes camera or live-inference failures without treating them as detections.
-  String? get errorMessage => _errorMessage;
+  String? get errorMessage => _cameraErrorMessage ?? _inferenceErrorMessage;
 
   /// Indicates that one frame is currently being analyzed in the worker.
   bool get isProcessingFrame => _isProcessingFrame;
@@ -174,7 +175,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isCameraReady =>
       _status == LiveCameraStatus.cameraReady &&
       _cameraController != null &&
-      _cameraController!.value.isInitialized;
+      _cameraController!.value.isInitialized &&
+      !_cameraController!.value.hasError;
 
   /// Shows the empty message only after successful processing, not during startup or errors.
   bool get shouldShowNoCalabash =>
@@ -182,7 +184,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       _hasProcessedFrame &&
       _stabilityStatus == LiveStabilityStatus.noCalabashDetected &&
       _liveDetections.isEmpty &&
-      _errorMessage == null;
+      errorMessage == null;
 
   /// Requests camera permission and starts the live session when allowed.
   Future<void> initialize() {
@@ -208,7 +210,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) {
+    if (controller == null ||
+        !controller.value.isInitialized ||
+        controller.value.hasError) {
       _captureErrorMessage = 'Camera is not ready yet.';
       _safeNotifyListeners();
       return null;
@@ -225,22 +229,30 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       if (_isDisposed ||
           _cameraController != controller ||
-          !controller.value.isInitialized) {
+          !controller.value.isInitialized ||
+          controller.value.hasError) {
         throw StateError('Camera became unavailable during capture.');
       }
 
       final capturedFile = await controller.takePicture().timeout(
         _cameraOperationTimeout,
       );
+      if (_isDisposed ||
+          _cameraController != controller ||
+          controller.value.hasError) {
+        return null;
+      }
       _isPausedForStillResult = true;
       return File(capturedFile.path);
     } on TimeoutException {
+      if (_isDisposed || _cameraController != controller) return null;
       _captureErrorMessage = 'Camera timed out. Please try capturing again.';
       // A timed-out native operation can still be pending. Recreate this controller
       // before another shutter press rather than submitting a concurrent request.
       await _releaseCamera(keepLiveState: true);
       return null;
     } on CameraException catch (error) {
+      if (_isDisposed || _cameraController != controller) return null;
       _captureErrorMessage =
           'Image capture failed: ${error.description ?? error.code}';
       if (kDebugMode) {
@@ -249,6 +261,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       await _releaseCamera(keepLiveState: true);
       return null;
     } catch (error) {
+      if (_isDisposed || _cameraController != controller) return null;
       _captureErrorMessage = 'Image capture failed. Please try again.';
       if (kDebugMode) {
         debugPrint('Live still capture failed: $error');
@@ -284,11 +297,16 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       final controller = _cameraController;
-      if (controller == null || !controller.value.isInitialized) {
+      if (controller == null ||
+          !controller.value.isInitialized ||
+          controller.value.hasError) {
         await _ensurePermissionAndStart(requestPermission: false);
         return;
       }
 
+      // Retry a failed worker even when the camera stream is already healthy.
+      // Preview/shutter recovery must not wait for backend benchmarking.
+      unawaited(_ensureInferenceWorkerStarted());
       if (controller.value.isStreamingImages) {
         _captureErrorMessage = null;
         _setStatus(LiveCameraStatus.cameraReady);
@@ -296,11 +314,10 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       try {
-        // Preview/shutter recovery must not wait for backend benchmarking.
-        unawaited(_ensureInferenceWorkerStarted());
         if (_isDisposed ||
             _cameraController != controller ||
-            !controller.value.isInitialized) {
+            !controller.value.isInitialized ||
+            controller.value.hasError) {
           return;
         }
 
@@ -311,6 +328,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         await controller
             .startImageStream(_handleCameraFrame)
             .timeout(_cameraOperationTimeout);
+        if (_isDisposed || _cameraController != controller) return;
         _captureErrorMessage = null;
         _setStatus(LiveCameraStatus.cameraReady);
       } catch (error) {
@@ -319,7 +337,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         _setStatus(
           LiveCameraStatus.cameraError,
-          errorMessage: 'Camera could not resume live detection: $error',
+          errorMessage:
+              _cameraErrorMessage ??
+              'Camera could not resume live detection: $error',
         );
       }
     } finally {
@@ -335,7 +355,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) {
+    if (controller == null ||
+        !controller.value.isInitialized ||
+        controller.value.hasError) {
       _lastTorchError = 'Flashlight is available after the camera starts.';
       _safeNotifyListeners();
       return false;
@@ -478,7 +500,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       _cameraController = controller;
       _previewOrientation = controller.value.deviceOrientation;
-      controller.addListener(_handlePreviewOrientation);
+      controller.addListener(_handleCameraValueChanged);
       await controller.initialize().timeout(_cameraOperationTimeout);
       if (_isDisposed || _cameraController != controller) {
         await controller.dispose();
@@ -505,22 +527,40 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
 
-      _errorMessage = null;
       _setStatus(LiveCameraStatus.cameraReady);
       _recordLiveDiagnostic('camera_ready');
     } catch (error) {
+      final cameraError = _cameraErrorMessage;
       await _releaseCamera(keepLiveState: true);
       _setStatus(
         LiveCameraStatus.cameraError,
-        errorMessage: 'Camera could not be started: $error',
+        errorMessage: cameraError ?? 'Camera could not be started: $error',
       );
     }
   }
 
-  /// Discards old-coordinate masks and in-flight results when the phone rotates.
-  void _handlePreviewOrientation() {
-    final orientation = _cameraController?.value.deviceOrientation;
-    if (orientation == null || orientation == _previewOrientation) return;
+  /// Handles native failures as well as rotation on the existing controller listener.
+  void _handleCameraValueChanged() {
+    final value = _cameraController?.value;
+    if (_isDisposed || value == null) return;
+    if (value.hasError) {
+      final description = value.errorDescription?.trim();
+      _latestFrameSize = null;
+      _hasProcessedFrame = false;
+      _clearLiveDetections(cancelEmergencyExpiration: true);
+      _setStatus(
+        LiveCameraStatus.cameraError,
+        errorMessage: description == null || description.isEmpty
+            ? 'Camera failed. Please try again.'
+            : 'Camera error: $description',
+      );
+      // Detach this listener, invalidate in-flight results, and cancel pending
+      // frames before retry/lifecycle recovery can acquire a new camera.
+      unawaited(_releaseCamera(keepLiveState: true));
+      return;
+    }
+    final orientation = value.deviceOrientation;
+    if (orientation == _previewOrientation) return;
     _previewOrientation = orientation;
     _frameGeneration++;
     _pendingFrame = null;
@@ -561,6 +601,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         await worker.dispose();
         return;
       }
+      _inferenceErrorMessage = null;
       _nextFrameIsWarmUp = true;
       _lastCompletionMicros = null;
       if (_performanceProbe.enabled) {
@@ -579,7 +620,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugPrint('Live inference worker failed to start: $error');
       }
       if (!_isDisposed && _inferenceWorker == worker) {
-        _errorMessage = 'Live detection worker failed to start.';
+        _inferenceErrorMessage = 'Live detection worker failed to start.';
         _safeNotifyListeners();
       }
       await worker.dispose();
@@ -666,7 +707,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         activeController == null ||
         _isCapturingStill ||
         _isPausedForStillResult ||
-        !activeController.value.isInitialized) {
+        !activeController.value.isInitialized ||
+        activeController.value.hasError) {
       _performanceTracker.recordFrameDropped();
       _performanceTracker.maybeLog(pendingFrameCount: _pendingFrameCount);
       return;
@@ -756,7 +798,9 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     final activeController = _cameraController;
-    if (activeController == null || !activeController.value.isInitialized) {
+    if (activeController == null ||
+        !activeController.value.isInitialized ||
+        activeController.value.hasError) {
       _pendingFrame = null;
       _performanceTracker.recordFrameDropped();
       _performanceTracker.maybeLog(pendingFrameCount: _pendingFrameCount);
@@ -778,7 +822,10 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _processFrame(_LiveCameraFrame frame) async {
     final activeController = _cameraController;
     final generation = _frameGeneration;
-    if (activeController == null || _isDisposed || isCaptureWorkflowActive) {
+    if (activeController == null ||
+        activeController.value.hasError ||
+        _isDisposed ||
+        isCaptureWorkflowActive) {
       _performanceTracker.recordFrameDropped();
       return;
     }
@@ -857,7 +904,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         _expireOverlayIfEmergencyStale(publishAt);
         if (publishAt.difference(frame.capturedAt) >
             LiveResultPolicy.maxResultAge) {
-          _errorMessage =
+          _inferenceErrorMessage =
               'Live preview is taking longer. Tap capture for a clear result.';
         }
         return;
@@ -871,7 +918,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
       _lastPublishedFrameId = modelResult.frameId;
       _hasProcessedFrame = true;
-      _errorMessage = null;
+      _inferenceErrorMessage = null;
 
       if (detections.isEmpty) {
         final didClear = _clearLiveDetections(cancelEmergencyExpiration: true);
@@ -907,7 +954,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
           generation == _frameGeneration &&
           !isCaptureWorkflowActive) {
         _hasProcessedFrame = true;
-        _errorMessage = 'Live detection failed. Keep the camera steady.';
+        _inferenceErrorMessage =
+            'Live detection failed. Keep the camera steady.';
       }
     } finally {
       timer?.stop();
@@ -1099,7 +1147,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _releaseCameraResources({required bool keepLiveState}) async {
     _frameGeneration++;
     final controller = _cameraController;
-    controller?.removeListener(_handlePreviewOrientation);
+    controller?.removeListener(_handleCameraValueChanged);
     final inferenceWorker = _inferenceWorker;
     _cameraController = null;
     _inferenceWorker = null;
@@ -1126,7 +1174,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
       _lastPublishedFrameId = null;
       _lastInferenceStartedAt = null;
       _hasProcessedFrame = false;
-      _errorMessage = null;
+      _cameraErrorMessage = null;
+      _inferenceErrorMessage = null;
       _captureErrorMessage = null;
       _isPausedForStillResult = false;
       _stabilityStatus = LiveStabilityStatus.noCalabashDetected;
@@ -1218,8 +1267,12 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_isDisposed) {
       return;
     }
+    if (status == LiveCameraStatus.cameraReady &&
+        (_cameraController == null || _cameraController!.value.hasError)) {
+      return;
+    }
     _status = status;
-    _errorMessage = errorMessage;
+    _cameraErrorMessage = errorMessage;
     _safeNotifyListeners();
   }
 

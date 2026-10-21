@@ -7,6 +7,7 @@ import 'package:calabash_maturity_detection/services/live_inference_worker.dart'
 import 'package:calabash_maturity_detection/services/camera_image_converter.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
 import 'package:calabash_maturity_detection/services/performance_probe.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -18,17 +19,25 @@ class _Camera extends CameraPlatform {
   bool failCapture = false;
   Completer<XFile>? pendingCapture;
   Completer<void>? releasing;
+  Completer<void>? discovering;
+  Completer<void>? initializing;
+  final errors = <int, StreamController<CameraErrorEvent>>{};
+  final disposed = <int>[];
   final orientations =
       StreamController<DeviceOrientationChangedEvent>.broadcast();
 
   @override
-  Future<List<CameraDescription>> availableCameras() async => [
-    const CameraDescription(
-      name: 'rear',
-      lensDirection: CameraLensDirection.back,
-      sensorOrientation: 90,
-    ),
-  ];
+  Future<List<CameraDescription>> availableCameras() async {
+    await discovering?.future;
+    return [
+      const CameraDescription(
+        name: 'rear',
+        lensDirection: CameraLensDirection.back,
+        sensorOrientation: 90,
+      ),
+    ];
+  }
+
   @override
   Future<int> createCameraWithSettings(
     CameraDescription cameraDescription,
@@ -38,7 +47,7 @@ class _Camera extends CameraPlatform {
   Future<void> initializeCamera(
     int cameraId, {
     ImageFormatGroup imageFormatGroup = ImageFormatGroup.unknown,
-  }) async {}
+  }) async => initializing?.future;
   @override
   Stream<CameraInitializedEvent> onCameraInitialized(int cameraId) =>
       Stream.value(
@@ -54,7 +63,7 @@ class _Camera extends CameraPlatform {
       );
   @override
   Stream<CameraErrorEvent> onCameraError(int cameraId) =>
-      StreamController<CameraErrorEvent>().stream;
+      errors.putIfAbsent(cameraId, StreamController.broadcast).stream;
   @override
   Stream<DeviceOrientationChangedEvent> onDeviceOrientationChanged() =>
       orientations.stream;
@@ -75,7 +84,38 @@ class _Camera extends CameraPlatform {
   }
 
   @override
-  Future<void> dispose(int cameraId) async => releasing?.future;
+  Future<void> dispose(int cameraId) async {
+    disposed.add(cameraId);
+    await releasing?.future;
+  }
+}
+
+class _ControlledWorker extends LiveInferenceWorker {
+  final startup = Completer<void>();
+  bool _ready = false;
+  bool disposed = false;
+  @override
+  Future<void> start() async {
+    await startup.future;
+    if (!disposed) _ready = true;
+  }
+
+  @override
+  bool get isReady => _ready;
+  @override
+  Future<void> dispose() async {
+    disposed = true;
+    _ready = false;
+  }
+}
+
+class _FailingWorker extends LiveInferenceWorker {
+  @override
+  Future<void> start() async => throw StateError('fixture worker failure');
+  @override
+  bool get isReady => false;
+  @override
+  Future<void> dispose() async {}
 }
 
 class _SlowWorker extends LiveInferenceWorker {
@@ -146,13 +186,304 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(permissionChannel, (_) async => 1);
   });
-  tearDown(() {
-    camera.frames.close();
-    camera.orientations.close();
+  tearDown(() async {
+    // CameraController listens with .first, including on controllers that never
+    // failed. Resolve those futures before closing the fixture streams.
+    for (final entry in camera.errors.entries) {
+      entry.value.add(CameraErrorEvent(entry.key, 'fixture cleanup'));
+      await entry.value.close();
+    }
+    await camera.frames.close();
+    await camera.orientations.close();
+    debugDefaultTargetPlatformOverride = null;
     CameraPlatform.instance = original;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(permissionChannel, null);
   });
+
+  for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
+    group('$platform camera error recovery', () {
+      setUp(() => debugDefaultTargetPlatformOverride = platform);
+
+      test('H1 camera startup preserves an earlier worker failure', () async {
+        camera.discovering = Completer<void>();
+        final healthy = _SlowWorker()..ready.complete();
+        var workers = 0;
+        final provider = LiveCameraProvider(
+          workerFactory: () => ++workers == 1 ? _FailingWorker() : healthy,
+        );
+        addTearDown(provider.dispose);
+        final startup = provider.initialize();
+        await Future<void>.delayed(Duration.zero);
+        expect(provider.errorMessage, contains('worker failed to start'));
+        camera.discovering!.complete();
+        await startup;
+        expect(provider.isCameraReady, isTrue);
+        expect(provider.isInferenceReady, isFalse);
+        expect(provider.errorMessage, contains('worker failed to start'));
+
+        // Navigation/resume can retry just the worker on a healthy stream.
+        await Future.wait([
+          provider.resumeLiveDetection(),
+          provider.resumeLiveDetection(),
+        ]);
+        await Future<void>.delayed(Duration.zero);
+        expect(provider.isInferenceReady, isTrue);
+        expect(provider.errorMessage, isNull);
+        expect(workers, 2);
+        expect(camera.creations, 1);
+      });
+
+      test('H1 late worker failure persists until retry succeeds', () async {
+        final failed = _ControlledWorker();
+        final healthy = _ControlledWorker();
+        var workers = 0;
+        final provider = LiveCameraProvider(
+          workerFactory: () => ++workers == 1 ? failed : healthy,
+        );
+        addTearDown(provider.dispose);
+        // Camera startup must finish without waiting for the AI worker.
+        await provider.initialize();
+        expect(provider.isCameraReady, isTrue);
+        expect(provider.isInferenceReady, isFalse);
+        failed.startup.completeError(StateError('fixture delayed failure'));
+        await Future<void>.delayed(Duration.zero);
+        expect(provider.errorMessage, contains('worker failed to start'));
+        expect(failed.disposed, isTrue);
+
+        await provider.retryPermission();
+        expect(provider.isCameraReady, isTrue);
+        expect(provider.isInferenceReady, isFalse);
+        expect(provider.errorMessage, contains('worker failed to start'));
+        healthy.startup.complete();
+        await Future<void>.delayed(Duration.zero);
+        expect(provider.errorMessage, isNull);
+        expect(provider.isInferenceReady, isTrue);
+        expect(workers, 2);
+      });
+
+      test('H2 native runtime error is recoverable without rotation', () async {
+        final provider = LiveCameraProvider(workerFactory: _SlowWorker.new);
+        addTearDown(provider.dispose);
+        await provider.initialize();
+        final oldController = provider.cameraController!;
+        final oldId = oldController.cameraId;
+        camera.releasing = Completer<void>();
+        camera.errors[oldId]!.add(
+          CameraErrorEvent(oldId, 'fixture native camera failure'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(provider.status, LiveCameraStatus.cameraError);
+        expect(provider.isCameraReady, isFalse);
+        expect(
+          provider.errorMessage,
+          contains('fixture native camera failure'),
+        );
+        expect(await provider.captureStillImage(), isNull);
+        expect(camera.captures, 0);
+
+        final retry = Future.wait([
+          provider.retryPermission(),
+          provider.retryPermission(),
+        ]);
+        await Future<void>.delayed(Duration.zero);
+        expect(camera.creations, 1);
+        camera.releasing!.complete();
+        await retry;
+        expect(provider.isCameraReady, isTrue);
+        expect(provider.errorMessage, isNull);
+        expect(camera.creations, 2);
+        expect(camera.disposed.where((id) => id == oldId), hasLength(1));
+        var notifications = 0;
+        provider.addListener(() => notifications++);
+        camera.orientations.add(
+          DeviceOrientationChangedEvent(DeviceOrientation.landscapeLeft),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(notifications, 1);
+        expect(provider.isCameraReady, isTrue);
+        expect(await provider.captureStillImage(), isNotNull);
+        await provider.resumeLiveDetection();
+        expect(provider.isCameraReady, isTrue);
+      });
+
+      test('H2 native startup error cannot become camera ready', () async {
+        camera.initializing = Completer<void>();
+        final provider = LiveCameraProvider(workerFactory: _SlowWorker.new);
+        addTearDown(provider.dispose);
+        final startup = provider.initialize();
+        await Future<void>.delayed(Duration.zero);
+        final id = provider.cameraController!.cameraId;
+        camera.errors[id]!.add(CameraErrorEvent(id, 'fixture startup failure'));
+        await Future<void>.delayed(Duration.zero);
+        expect(provider.status, LiveCameraStatus.cameraError);
+        expect(provider.isCameraReady, isFalse);
+        camera.initializing!.complete();
+        await startup;
+        expect(provider.status, LiveCameraStatus.cameraError);
+        expect(provider.errorMessage, contains('fixture startup failure'));
+        expect(provider.isCameraReady, isFalse);
+        await provider.resumeLiveDetection();
+        expect(provider.isCameraReady, isTrue);
+        expect(provider.errorMessage, isNull);
+      });
+
+      test('H1/H2 worker completion cannot clear a native error', () async {
+        final worker = _ControlledWorker();
+        final provider = LiveCameraProvider(workerFactory: () => worker);
+        addTearDown(provider.dispose);
+        await provider.initialize();
+        final id = provider.cameraController!.cameraId;
+        camera.errors[id]!.add(CameraErrorEvent(id, 'fixture native failure'));
+        await Future<void>.delayed(Duration.zero);
+        worker.startup.completeError(StateError('fixture late worker failure'));
+        await Future<void>.delayed(Duration.zero);
+        expect(provider.status, LiveCameraStatus.cameraError);
+        expect(provider.errorMessage, contains('fixture native failure'));
+        expect(provider.isCameraReady, isFalse);
+      });
+
+      test('H2 invalidates active inference and drops later frames', () async {
+        final worker = _MeasuredWorker();
+        final provider = LiveCameraProvider(workerFactory: () => worker);
+        addTearDown(provider.dispose);
+        await provider.initialize();
+        final frame = CameraImageData(
+          format: const CameraImageFormat(
+            ImageFormatGroup.bgra8888,
+            raw: 1111970369,
+          ),
+          width: 4,
+          height: 4,
+          planes: [
+            CameraImagePlane(
+              bytes: Uint8List(64),
+              bytesPerRow: 16,
+              bytesPerPixel: 4,
+            ),
+          ],
+        );
+        camera.frames.add(frame);
+        await Future<void>.delayed(Duration.zero);
+        expect(worker.received, hasLength(1));
+        final id = provider.cameraController!.cameraId;
+        camera.errors[id]!.add(
+          CameraErrorEvent(id, 'fixture inference interruption'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        camera.frames.add(frame);
+        worker.first.complete(worker.result(worker.received.first));
+        await Future<void>.delayed(const Duration(milliseconds: 110));
+        expect(worker.received, hasLength(1));
+        expect(provider.hasProcessedFrame, isFalse);
+        expect(provider.latestFrameSize, isNull);
+        expect(provider.liveDetections, isEmpty);
+        expect(
+          provider.errorMessage,
+          contains('fixture inference interruption'),
+        );
+        expect(provider.isProcessingFrame, isFalse);
+      });
+
+      for (final outcome in [
+        'camera error',
+        'timeout',
+        'other error',
+        'photo',
+      ]) {
+        test('H2 late capture $outcome cannot release a replacement', () async {
+          final provider = LiveCameraProvider(workerFactory: _SlowWorker.new);
+          addTearDown(provider.dispose);
+          await provider.initialize();
+          final oldId = provider.cameraController!.cameraId;
+          final pending = Completer<XFile>();
+          camera.pendingCapture = pending;
+          final capture = provider.captureStillImage();
+          await Future<void>.delayed(Duration.zero);
+          camera.errors[oldId]!.add(
+            CameraErrorEvent(oldId, 'fixture capture interruption'),
+          );
+          await Future<void>.delayed(Duration.zero);
+          await provider.retryPermission();
+          final replacement = provider.cameraController;
+          expect(replacement, isNotNull);
+          expect(provider.isCameraReady, isTrue);
+          camera.pendingCapture = null;
+          switch (outcome) {
+            case 'camera error':
+              pending.completeError(
+                CameraException('capture', 'fixture obsolete failure'),
+              );
+            case 'timeout':
+              pending.completeError(
+                TimeoutException('fixture obsolete timeout'),
+              );
+            case 'other error':
+              pending.completeError(StateError('fixture obsolete failure'));
+            case 'photo':
+              pending.complete(XFile('obsolete-photo.jpg'));
+          }
+          expect(await capture, isNull);
+          expect(provider.cameraController, same(replacement));
+          expect(provider.isCameraReady, isTrue);
+          expect(provider.captureErrorMessage, isNull);
+          expect(provider.isCaptureWorkflowActive, isFalse);
+          expect(camera.disposed, [oldId]);
+          expect(await provider.captureStillImage(), isNotNull);
+          await provider.resumeLiveDetection();
+          expect(camera.creations, 2);
+        });
+      }
+
+      test('H1 late worker failure after disposal is ignored', () async {
+        final worker = _ControlledWorker();
+        final provider = LiveCameraProvider(workerFactory: () => worker);
+        await provider.initialize();
+        var notifications = 0;
+        provider.addListener(() => notifications++);
+        provider.dispose();
+        worker.startup.completeError(StateError('fixture disposed startup'));
+        await Future<void>.delayed(Duration.zero);
+        expect(worker.disposed, isTrue);
+        expect(notifications, 0);
+        expect(camera.frames.hasListener, isFalse);
+        expect(camera.orientations.hasListener, isFalse);
+      });
+
+      test('H1 replaced worker cannot clear the current failure', () async {
+        final oldWorker = _ControlledWorker();
+        var workers = 0;
+        final provider = LiveCameraProvider(
+          workerFactory: () => ++workers == 1 ? oldWorker : _FailingWorker(),
+        );
+        addTearDown(provider.dispose);
+        await provider.initialize();
+        await provider.retryPermission();
+        expect(provider.errorMessage, contains('worker failed to start'));
+        oldWorker.startup.complete();
+        await Future<void>.delayed(Duration.zero);
+        expect(oldWorker.disposed, isTrue);
+        expect(provider.errorMessage, contains('worker failed to start'));
+        expect(provider.isCameraReady, isTrue);
+        expect(provider.isInferenceReady, isFalse);
+      });
+
+      test('H2 empty native description uses a recoverable error', () async {
+        final provider = LiveCameraProvider(workerFactory: _SlowWorker.new);
+        addTearDown(provider.dispose);
+        await provider.initialize();
+        final id = provider.cameraController!.cameraId;
+        camera.errors[id]!.add(CameraErrorEvent(id, '  '));
+        await Future<void>.delayed(Duration.zero);
+        expect(provider.status, LiveCameraStatus.cameraError);
+        expect(provider.errorMessage, 'Camera failed. Please try again.');
+        expect(provider.isCameraReady, isFalse);
+        await provider.retryPermission();
+        expect(provider.isCameraReady, isTrue);
+        expect(provider.errorMessage, isNull);
+      });
+    });
+  }
 
   test(
     'live recording preserves one newest pending frame and measures queue separately',

@@ -86,6 +86,15 @@ flutter run
 
 ## Live Camera Performance
 
+Camera and AI worker startup run concurrently. Camera readiness does not clear
+a worker failure; the message remains until worker initialization succeeds.
+Returning to Live Capture retries a failed worker without reopening a healthy
+camera stream. Native camera errors enter the existing error screen and release
+the failed session; **Try Again** waits for cleanup before creating a new one.
+Late capture callbacks cannot release or pause a replacement camera session.
+Regression tests cover these paths with iOS and Android platform fakes; native
+device testing is still required.
+
 Android uses three-plane YUV420 with sensor rotation. iOS uses BGRA8888 with
 four-byte pixels, retaining AVFoundation's already-oriented image buffers.
 Both paths use the same converter, respecting row padding and plane strides.
