@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/widgets/detection_box.dart';
+import 'package:calabash_maturity_detection/utils/ui_tokens.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -100,55 +101,73 @@ class _DetectionImageState extends State<DetectionImage> {
   @override
   Widget build(BuildContext context) {
     final image = _info?.image;
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: AspectRatio(
-        aspectRatio: image == null
-            ? 1
-            : (image.width / image.height).clamp(.72, 1.45).toDouble(),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            if (image == null) {
-              return Center(
-                child: _failed
-                    ? const Text('Unable to display this image.')
-                    : const CircularProgressIndicator(),
-              );
-            }
-            final size = Size(constraints.maxWidth, constraints.maxHeight);
-            final fitted = applyBoxFit(
-              BoxFit.contain,
-              Size(image.width.toDouble(), image.height.toDouble()),
-              size,
-            );
-            final rect = Alignment.center.inscribe(
-              fitted.destination,
-              Offset.zero & size,
-            );
-            return Stack(
-              children: [
-                Positioned.fill(
-                  child: ColoredBox(color: Colors.black.withValues(alpha: .88)),
-                ),
-                Positioned.fromRect(
-                  rect: rect,
-                  child: RawImage(image: image, fit: BoxFit.fill),
-                ),
-                ...widget.detections.asMap().entries.map(
-                  (entry) => DetectionBox(
-                    detection: entry.value,
-                    fruitNumber: entry.key + 1,
-                    imageWidth: rect.width,
-                    imageHeight: rect.height,
-                    offsetX: rect.left,
-                    offsetY: rect.top,
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
+    return LayoutBuilder(
+      builder: (context, available) {
+        final maxHeight =
+            (MediaQuery.sizeOf(context).height *
+                    UiTokens.previewViewportFraction)
+                .clamp(1.0, UiTokens.previewMaxHeight);
+        final preview = applyBoxFit(
+          BoxFit.contain,
+          image == null
+              ? const Size(1, 1)
+              : Size(image.width.toDouble(), image.height.toDouble()),
+          Size(available.maxWidth, maxHeight),
+        ).destination;
+        return Align(
+          alignment: Alignment.topCenter,
+          child: Card(
+            margin: EdgeInsets.zero,
+            clipBehavior: Clip.antiAlias,
+            child: SizedBox(
+              width: preview.width,
+              height: preview.height,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  if (image == null) {
+                    return Center(
+                      child: _failed
+                          ? const Text('Unable to display this image.')
+                          : const CircularProgressIndicator(),
+                    );
+                  }
+                  final size = Size(
+                    constraints.maxWidth,
+                    constraints.maxHeight,
+                  );
+                  final fitted = applyBoxFit(
+                    BoxFit.contain,
+                    Size(image.width.toDouble(), image.height.toDouble()),
+                    size,
+                  );
+                  final rect = Alignment.center.inscribe(
+                    fitted.destination,
+                    Offset.zero & size,
+                  );
+                  return Stack(
+                    children: [
+                      Positioned.fromRect(
+                        rect: rect,
+                        child: RawImage(image: image, fit: BoxFit.fill),
+                      ),
+                      ...widget.detections.asMap().entries.map(
+                        (entry) => DetectionBox(
+                          detection: entry.value,
+                          fruitNumber: entry.key + 1,
+                          imageWidth: rect.width,
+                          imageHeight: rect.height,
+                          offsetX: rect.left,
+                          offsetY: rect.top,
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

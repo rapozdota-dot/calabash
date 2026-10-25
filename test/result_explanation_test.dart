@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/providers/detection_provider.dart';
 import 'package:calabash_maturity_detection/screens/result_screen.dart';
+import 'package:calabash_maturity_detection/utils/app_theme.dart';
 import 'package:calabash_maturity_detection/widgets/detection_image.dart';
 import 'package:calabash_maturity_detection/widgets/result_card.dart';
 import 'package:flutter/material.dart';
@@ -16,7 +17,7 @@ import 'package:provider/provider.dart';
 import 'detection_provider_test.dart' show TestImageService, TestModelService;
 
 const _confidenceExplanation =
-    "The model confidence score indicates how strongly the model favors the predicted maturity class. It does not represent the model's measured accuracy or statistical margin of error.";
+    "This is the detection model's score for the predicted maturity class of this fruit region. It describes how strongly the model supports the prediction. It does not represent measured accuracy, a calibrated probability, or a statistical margin of error.";
 const _externalAssessment =
     'This application estimates calabash maturity based on visible surface characteristics. It cannot determine internal ripeness, internal quality, or fruit safety. Additional inspection is recommended before harvesting or use.';
 const _segmentationExplanation =
@@ -74,7 +75,7 @@ Future<void> _showResult(
       ChangeNotifierProvider<DetectionProvider>.value(
         value: provider,
         child: MaterialApp(
-          theme: ThemeData(useMaterial3: true),
+          theme: AppTheme.build(),
           builder: (context, child) => MediaQuery(
             data: MediaQuery.of(
               context,
@@ -126,7 +127,7 @@ void main() {
 
     expect(find.text('86% Model confidence score'), findsOneWidget);
     expect(find.textContaining('AI confidence'), findsNothing);
-    expect(find.text('MATURE'), findsOneWidget);
+    expect(find.text('Mature'), findsOneWidget);
     expect(find.text('#1 Mature 86%'), findsOneWidget);
     expect(provider.detections.single.confidence, .864);
 
@@ -179,6 +180,10 @@ void main() {
       expect(find.text(label), findsOneWidget);
     }
     expect(find.byType(ResultCard), findsNWidgets(3));
+    expect(
+      tester.getTopLeft(find.text('Individual results')).dy,
+      lessThan(tester.getTopLeft(find.text('Suggested guidance')).dy),
+    );
     for (final score in ['86%', '74%', '91%']) {
       expect(find.text('$score Model confidence score'), findsOneWidget);
     }
@@ -235,6 +240,20 @@ void main() {
       isNotNull,
     );
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('missing-image recovery fits landscape with enlarged text', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(568, 320);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final provider = _provider(() async => []);
+    await _showResult(tester, provider, image, textScale: 2);
+    expect(tester.takeException(), isNull);
+    await tester.ensureVisible(find.text('Start New Scan'));
+    expect(find.text('Start New Scan').hitTestable(), findsOneWidget);
   });
 
   testWidgets('analysis failure does not show successful result explanations', (

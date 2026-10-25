@@ -1,5 +1,7 @@
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
+import 'package:calabash_maturity_detection/utils/prediction_explanations.dart';
+import 'package:calabash_maturity_detection/widgets/information_button.dart';
 import 'package:flutter/material.dart';
 
 class ResultCard extends StatelessWidget {
@@ -20,10 +22,10 @@ class ResultCard extends StatelessWidget {
           children: [
             CircleAvatar(
               backgroundColor: color.withValues(alpha: 0.16),
-              foregroundColor: color,
+              foregroundColor: AppConstants.softText,
               child: Text(
                 '$index',
-                style: const TextStyle(fontWeight: FontWeight.w900),
+                style: Theme.of(context).textTheme.titleMedium,
               ),
             ),
             const SizedBox(width: 12),
@@ -35,14 +37,11 @@ class ResultCard extends StatelessWidget {
                     'Fruit $index',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: AppConstants.mutedText,
-                      fontWeight: FontWeight.w800,
                     ),
                   ),
                   Text(
                     detection.maturityClass.label,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w900,
-                    ),
+                    style: Theme.of(context).textTheme.titleMedium,
                   ),
                   ModelConfidenceScore(
                     confidence: detection.confidence,
@@ -53,7 +52,6 @@ class ResultCard extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(Icons.eco_rounded, color: color),
           ],
         ),
       ),
@@ -70,56 +68,11 @@ class ModelConfidenceScore extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Flexible(
-          child: Text(
-            '${(confidence * 100).toStringAsFixed(0)}% Model confidence score',
-            style: style,
-          ),
-        ),
-        const ResultInformationButton(
-          title: 'Model confidence score',
-          message:
-              "The model confidence score indicates how strongly the model favors the predicted maturity class. It does not represent the model's measured accuracy or statistical margin of error.",
-        ),
-      ],
-    );
-  }
-}
-
-/// Opens optional result explanations through a labeled, keyboard-accessible button.
-class ResultInformationButton extends StatelessWidget {
-  const ResultInformationButton({
-    super.key,
-    required this.title,
-    required this.message,
-  });
-
-  final String title;
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return IconButton(
-      tooltip: 'About ${title.toLowerCase()}',
-      icon: const Icon(Icons.info_outline_rounded, size: 20),
-      color: AppConstants.primaryGreen,
-      onPressed: () => showDialog<void>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          scrollable: true,
-          title: Text(title),
-          content: Text(message),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Close'),
-            ),
-          ],
-        ),
-      ),
+    return InformationLabel(
+      text: '${(confidence * 100).toStringAsFixed(0)}% Model confidence score',
+      style: style,
+      title: 'Model confidence score',
+      message: PredictionExplanations.confidence,
     );
   }
 }

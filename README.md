@@ -48,12 +48,13 @@ to 640x640 with fill 114, packed as RGB float32 / 255, and boxes are decoded
 from normalized coordinates. Prototype output order is identified by shape.
 The 39 detection channels remain 4 box values, 3 class scores, and 32 mask
 coefficients. Class-aware NMS removes duplicate predictions within the same
-stage while retaining overlapping fruits of different stages. Only nonempty
+stage. Near-identical boxes of different stages are also suppressed above
+0.85 IoU; other different-stage overlaps can remain. Only nonempty
 final masks are counted.
 The photo and live confidence thresholds are both 0.45; these
 conservative settings can miss small or difficult fruits and should be checked
 on independent phone images. Mask support requires at least four prototype
-pixels and 1% of the candidate crop, followed by validation after smoothing.
+pixels and 10% of the candidate crop, followed by validation after smoothing.
 
 Direct TFLite smoke testing produced fruit predictions at up to 97.7% confidence
 on the supplied field photo that the previous two models missed. Sampled
@@ -71,6 +72,23 @@ python tool/diagnose_model.py --model assets/model/model.tflite --image path/to/
 ```
 
 ## Run Locally
+
+### Shared UI presentation
+
+The existing Nunito Sans family and green/cream palette are retained. `AppTheme`
+owns typography and component themes; `UiTokens` contains presentation dimensions
+separately from inference and camera constants. The shared information button,
+responsive label row, and scrollable information dialog are used by Home,
+results, and live prediction help. See [DESIGN.md](DESIGN.md) for their mapping
+and the screen hierarchy.
+
+The displayed model confidence is the selected maturity-class score from the
+detection model, rounded to a whole percentage for display. It is not measured
+accuracy, a calibrated probability, or a margin of error. Live tracking retains
+the score associated with its stabilized stage. No separate maturity classifier
+is integrated.
+
+### Start the app
 
 The home screen has two direct actions: **Scan Calabash** opens the live camera
 with its capture button, and **Choose from Gallery** opens the image picker and

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:ui' as ui;
+import 'dart:math' as math;
 
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/widgets/detection_box.dart';
@@ -30,6 +31,117 @@ class _CountingImageProvider extends ImageProvider<_CountingImageProvider> {
 }
 
 void main() {
+  for (final dimensions in [const Size(40, 160), const Size(160, 40)]) {
+    testWidgets('preview fits $dimensions without letterboxing or mask drift', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(320, 568);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final picture = ui.PictureRecorder();
+      Canvas(picture).drawColor(Colors.green, BlendMode.src);
+      final recording = picture.endRecording();
+      final image = (await tester.runAsync(
+        () => recording.toImage(
+          dimensions.width.toInt(),
+          dimensions.height.toInt(),
+        ),
+      ))!;
+      recording.dispose();
+      final provider = _CountingImageProvider(image);
+      final mask = SegmentationMask(
+        bounds: const Rect.fromLTWH(.2, .2, .4, .4),
+        width: 2,
+        height: 2,
+        pixels: Uint8List.fromList([1, 0, 0, 1]),
+      );
+      final detection = Detection(
+        boundingBox: Rect.fromLTWH(.2, .2, .4, .4),
+        maturityClass: MaturityClass.mature,
+        confidence: .864,
+        mask: mask,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: DetectionImage(
+                imageFile: File('geometry.png'),
+                imageProvider: provider,
+                detections: [detection],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final rawRect = tester.getRect(find.byType(RawImage));
+      final previewRect = tester.getRect(find.byType(Card));
+      expect(rawRect.size.aspectRatio, closeTo(dimensions.aspectRatio, .001));
+      expect(previewRect.size, rawRect.size);
+      expect(previewRect.height, lessThanOrEqualTo(568 * .5));
+      final overlay = tester.widget<DetectionBox>(find.byType(DetectionBox));
+      expect(overlay.detection, same(detection));
+      expect(overlay.detection.mask, same(mask));
+      expect(overlay.detection.mask!.pixels, orderedEquals([1, 0, 0, 1]));
+      expect(overlay.imageWidth, closeTo(rawRect.width, .001));
+      expect(overlay.imageHeight, closeTo(rawRect.height, .001));
+      expect(overlay.offsetX, closeTo(0, .001));
+      expect(overlay.offsetY, closeTo(0, .001));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      tester.binding.imageCache.clear();
+      tester.binding.imageCache.clearLiveImages();
+      image.dispose();
+    });
+  }
+
+  for (final maturity in [
+    MaturityClass.immature,
+    MaturityClass.mature,
+    MaturityClass.overmature,
+  ]) {
+    testWidgets(
+      '${maturity.label} overlay label has readable status contrast',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SizedBox(
+                width: 320,
+                height: 240,
+                child: Stack(
+                  children: [
+                    DetectionBox(
+                      detection: Detection(
+                        boundingBox: const Rect.fromLTWH(.2, .2, .4, .4),
+                        maturityClass: maturity,
+                        confidence: .864,
+                      ),
+                      fruitNumber: 1,
+                      imageWidth: 320,
+                      imageHeight: 240,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+        final text = tester.widget<Text>(find.text('#1 ${maturity.label} 86%'));
+        final foreground = text.style!.color!.computeLuminance();
+        final background = maturity.color.computeLuminance();
+        final contrast =
+            (math.max(foreground, background) + .05) /
+            (math.min(foreground, background) + .05);
+        expect(contrast, greaterThanOrEqualTo(4.5));
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets('changing overlays reuses the decoded image and dimensions', (
     tester,
   ) async {

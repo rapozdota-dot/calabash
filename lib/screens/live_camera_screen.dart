@@ -7,8 +7,11 @@ import 'package:calabash_maturity_detection/providers/live_camera_provider.dart'
 import 'package:calabash_maturity_detection/providers/live_detection_tracker.dart';
 import 'package:calabash_maturity_detection/screens/result_screen.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
+import 'package:calabash_maturity_detection/utils/app_theme.dart';
 import 'package:calabash_maturity_detection/utils/navigation.dart';
+import 'package:calabash_maturity_detection/utils/prediction_explanations.dart';
 import 'package:calabash_maturity_detection/widgets/detection_box.dart';
+import 'package:calabash_maturity_detection/widgets/information_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -52,12 +55,10 @@ class _LiveCameraView extends StatelessWidget {
         foregroundColor: Colors.white,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        toolbarHeight: landscape ? 44 : 56,
-        titleTextStyle: Theme.of(context).textTheme.titleLarge?.copyWith(
-          color: Colors.white,
-          fontSize: 18,
-          fontWeight: FontWeight.w700,
-        ),
+        toolbarHeight: landscape ? 48 : 56,
+        titleTextStyle: Theme.of(
+          context,
+        ).textTheme.titleMedium?.copyWith(color: Colors.white),
         systemOverlayStyle: SystemUiOverlayStyle.light,
         actions: const [_TorchAction(), _LiveInformationAction()],
       ),
@@ -114,38 +115,14 @@ class _LiveInformationAction extends StatelessWidget {
       (provider) => provider.isCaptureWorkflowActive,
     );
 
-    return IconButton(
+    return InformationButton(
       tooltip: 'About live predictions',
-      icon: const Icon(Icons.info_outline_rounded),
+      title: 'Live prediction information',
+      message:
+          '${PredictionExplanations.confidence}\n\n${PredictionExplanations.liveExternalAssessment}',
+      color: Colors.white,
       disabledColor: Colors.white38,
-      onPressed: isCaptureWorkflowActive
-          ? null
-          : () => showDialog<void>(
-              context: context,
-              builder: (dialogContext) => AlertDialog(
-                scrollable: true,
-                title: const Text('Live prediction information'),
-                content: const Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      "The displayed confidence score indicates how strongly the model favors a predicted maturity class. It does not represent the model's measured accuracy or statistical margin of error.",
-                    ),
-                    SizedBox(height: AppConstants.sectionSpacing),
-                    Text(
-                      'Maturity predictions are based on external appearance only.',
-                    ),
-                  ],
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.of(dialogContext).pop(),
-                    child: const Text('Close'),
-                  ),
-                ],
-              ),
-            ),
+      enabled: !isCaptureWorkflowActive,
     );
   }
 }
@@ -500,6 +477,7 @@ class _ReadinessIndicator extends StatelessWidget {
       LiveStabilityStatus.holdSteady => Icons.pan_tool_alt_rounded,
       LiveStabilityStatus.ready => Icons.check_circle_rounded,
     };
+    final foreground = AppTheme.onStatusColor(color);
     final label = !modelReady
         ? 'Starting fruit detection...'
         : !hasProcessed
@@ -516,7 +494,7 @@ class _ReadinessIndicator extends StatelessWidget {
           ? Duration.zero
           : const Duration(milliseconds: 220),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.92),
+        color: color,
         borderRadius: BorderRadius.circular(AppConstants.overlayRadius),
         border: Border.all(color: Colors.white.withValues(alpha: 0.24)),
         boxShadow: [
@@ -532,19 +510,16 @@ class _ReadinessIndicator extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 18, color: Colors.white),
+            Icon(icon, size: 18, color: foreground),
             const SizedBox(width: 8),
             Flexible(
               child: Text(
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 0,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: foreground),
               ),
             ),
           ],
@@ -597,14 +572,12 @@ class _LiveCaptureControls extends StatelessWidget {
                 onPressed: () => _captureAndOpenResult(context),
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 'Capture for full analysis',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: Colors.white),
               ),
             ],
           ),
@@ -688,12 +661,12 @@ class _CaptureProgressPill extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppConstants.overlayRadius),
         border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
       ),
-      child: const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            SizedBox(
+            const SizedBox(
               width: 14,
               height: 14,
               child: CircularProgressIndicator(
@@ -701,15 +674,13 @@ class _CaptureProgressPill extends StatelessWidget {
                 color: Colors.white,
               ),
             ),
-            SizedBox(width: 8),
+            const SizedBox(width: 8),
             Flexible(
               child: Text(
                 'Processing capture...',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: Colors.white),
               ),
             ),
           ],
@@ -899,15 +870,17 @@ class _LiveLoadingState extends StatelessWidget {
   /// Shows camera-startup progress before the native preview is available.
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          CircularProgressIndicator(),
-          SizedBox(height: AppConstants.sectionSpacing),
+          const CircularProgressIndicator(),
+          const SizedBox(height: AppConstants.sectionSpacing),
           Text(
             'Starting live detection...',
-            style: TextStyle(fontWeight: FontWeight.w800, color: Colors.white),
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: Colors.white),
           ),
         ],
       ),
@@ -932,7 +905,7 @@ class _PermissionMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -942,10 +915,9 @@ class _PermissionMessage extends StatelessWidget {
             Text(
               title,
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w900,
-                color: Colors.white,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(color: Colors.white),
             ),
             const SizedBox(height: AppConstants.sectionSpacing),
             ElevatedButton(onPressed: onPressed, child: Text(buttonLabel)),
@@ -1005,10 +977,9 @@ class _LiveStatusBar extends StatelessWidget {
                   text,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w800,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(color: Colors.white),
                 ),
               ),
             ],

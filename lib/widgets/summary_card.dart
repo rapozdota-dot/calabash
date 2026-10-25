@@ -37,9 +37,7 @@ class SummaryCard extends StatelessWidget {
                 Expanded(
                   child: Text(
                     '$total calabash $fruitLabel detected',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w900,
-                    ),
+                    style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
               ],
@@ -50,16 +48,19 @@ class SummaryCard extends StatelessWidget {
               runSpacing: 8,
               children: [
                 _pill(
+                  context,
                   MaturityClass.mature.label,
                   mature,
                   MaturityClass.mature.color,
                 ),
                 _pill(
+                  context,
                   MaturityClass.immature.label,
                   immature,
                   MaturityClass.immature.color,
                 ),
                 _pill(
+                  context,
                   MaturityClass.overmature.label,
                   overmature,
                   MaturityClass.overmature.color,
@@ -73,7 +74,7 @@ class SummaryCard extends StatelessWidget {
   }
 
   /// Builds a colored stage/count chip using the shared summary styling.
-  Widget _pill(String label, int value, Color color) {
+  Widget _pill(BuildContext context, String label, int value, Color color) {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.10),
@@ -94,7 +95,9 @@ class SummaryCard extends StatelessWidget {
             Flexible(
               child: Text(
                 '$value $label',
-                style: TextStyle(color: color, fontWeight: FontWeight.w900),
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(color: AppConstants.softText),
               ),
             ),
           ],
