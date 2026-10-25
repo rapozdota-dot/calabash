@@ -39,9 +39,36 @@ class ResultScreen extends StatelessWidget {
                 padding: const EdgeInsets.all(AppConstants.resultPagePadding),
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    final image = DetectionImage(
-                      imageFile: imageFile,
-                      detections: detections,
+                    final image = Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (detections.isNotEmpty &&
+                            !provider.isAnalyzing &&
+                            provider.errorMessage == null)
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Highlighted fruit regions',
+                                  style: Theme.of(context).textTheme.titleSmall
+                                      ?.copyWith(
+                                        color: AppConstants.primaryGreen,
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                ),
+                              ),
+                              const ResultInformationButton(
+                                title: 'Highlighted fruit regions',
+                                message:
+                                    'The highlighted areas show the fruit regions identified by the detection model. These outlines are predictions and may not perfectly match the actual fruit boundaries.',
+                              ),
+                            ],
+                          ),
+                        DetectionImage(
+                          imageFile: imageFile,
+                          detections: detections,
+                        ),
+                      ],
                     );
                     final details = Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -140,6 +167,8 @@ class ResultScreen extends StatelessWidget {
       const SizedBox(height: 12),
       _recommendationCard(context, _guidanceForMultipleDetections(provider)),
       const SizedBox(height: AppConstants.sectionSpacing),
+      _externalAssessmentNotice(context),
+      const SizedBox(height: AppConstants.sectionSpacing),
       _detectedList(context, detections),
       const SizedBox(height: 6),
       _scanAgainButton(context, provider),
@@ -179,7 +208,6 @@ class ResultScreen extends StatelessWidget {
   /// Emphasizes one fruit's maturity and confidence without an unnecessary count summary.
   Widget _singleDetectionResult(BuildContext context, Detection detection) {
     final color = detection.maturityClass.color;
-    final confidence = (detection.confidence * 100).toStringAsFixed(0);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -199,8 +227,8 @@ class ResultScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  '$confidence% AI confidence',
+                ModelConfidenceScore(
+                  confidence: detection.confidence,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     color: AppConstants.softText,
                     fontWeight: FontWeight.w800,
@@ -212,6 +240,8 @@ class ResultScreen extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         _recommendationCard(context, _guidanceForSingleDetection(detection)),
+        const SizedBox(height: AppConstants.sectionSpacing),
+        _externalAssessmentNotice(context),
       ],
     );
   }
@@ -252,7 +282,7 @@ class ResultScreen extends StatelessWidget {
                   ? 'Please wait while the selected image is being processed.'
                   : failed
                   ? 'No detection result is available. Try another image or capture a new photo.'
-                  : 'We could not find a calabash fruit in this image. Try a clearer photo with the fruit visible and well lit.',
+                  : 'No calabash fruit was detected in this image. This does not necessarily mean no fruit is present. Try using better lighting, moving closer, or capturing the fruit from another angle.',
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
@@ -316,6 +346,46 @@ class ResultScreen extends StatelessWidget {
                 color: AppConstants.softText,
                 fontWeight: FontWeight.w800,
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Keeps the limits of a surface-based prediction visible beside successful results.
+  Widget _externalAssessmentNotice(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(AppConstants.compactCardPadding),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.info_outline_rounded,
+                  color: AppConstants.primaryGreen,
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'External Assessment Only',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: AppConstants.primaryGreen,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppConstants.smallSpacing),
+            Text(
+              'This application estimates calabash maturity based on visible surface characteristics. It cannot determine internal ripeness, internal quality, or fruit safety. Additional inspection is recommended before harvesting or use.',
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(color: AppConstants.softText),
             ),
           ],
         ),

@@ -91,9 +91,11 @@ class SummaryCard extends StatelessWidget {
               decoration: BoxDecoration(color: color, shape: BoxShape.circle),
             ),
             const SizedBox(width: 7),
-            Text(
-              '$value $label',
-              style: TextStyle(color: color, fontWeight: FontWeight.w900),
+            Flexible(
+              child: Text(
+                '$value $label',
+                style: TextStyle(color: color, fontWeight: FontWeight.w900),
+              ),
             ),
           ],
         ),

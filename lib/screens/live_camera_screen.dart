@@ -59,7 +59,7 @@ class _LiveCameraView extends StatelessWidget {
           fontWeight: FontWeight.w700,
         ),
         systemOverlayStyle: SystemUiOverlayStyle.light,
-        actions: const [_TorchAction()],
+        actions: const [_TorchAction(), _LiveInformationAction()],
       ),
       body: SafeArea(child: _bodyFor(context, status, errorMessage)),
     );
@@ -101,6 +101,52 @@ class _LiveCameraView extends StatelessWidget {
       case LiveCameraStatus.cameraReady:
         return const _LivePreview();
     }
+  }
+}
+
+/// Keeps optional prediction explanations outside the frame-driven overlays.
+class _LiveInformationAction extends StatelessWidget {
+  const _LiveInformationAction();
+
+  @override
+  Widget build(BuildContext context) {
+    final isCaptureWorkflowActive = context.select<LiveCameraProvider, bool>(
+      (provider) => provider.isCaptureWorkflowActive,
+    );
+
+    return IconButton(
+      tooltip: 'About live predictions',
+      icon: const Icon(Icons.info_outline_rounded),
+      disabledColor: Colors.white38,
+      onPressed: isCaptureWorkflowActive
+          ? null
+          : () => showDialog<void>(
+              context: context,
+              builder: (dialogContext) => AlertDialog(
+                scrollable: true,
+                title: const Text('Live prediction information'),
+                content: const Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "The displayed confidence score indicates how strongly the model favors a predicted maturity class. It does not represent the model's measured accuracy or statistical margin of error.",
+                    ),
+                    SizedBox(height: AppConstants.sectionSpacing),
+                    Text(
+                      'Maturity predictions are based on external appearance only.',
+                    ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child: const Text('Close'),
+                  ),
+                ],
+              ),
+            ),
+    );
   }
 }
 
@@ -931,7 +977,7 @@ class _LiveStatusBar extends StatelessWidget {
         (isSlow
             ? 'Hold steady. Capture gives a more detailed result.'
             : hasDetections
-            ? 'Tap capture to confirm maturity'
+            ? 'Tap capture to review maturity'
             : 'Tap to focus. Move closer in good light.');
     final icon = errorMessage != null
         ? Icons.error_outline_rounded
