@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
 
-  /// Displays the project purpose, offline model workflow, and research information.
+  /// Explains the app's visual predictions, limitations, and practical scanning tips.
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -16,7 +16,7 @@ class AboutScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                AppConstants.appName,
+                'About Calabash Maturity Detection',
                 style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                   color: AppConstants.primaryGreen,
                   fontWeight: FontWeight.w900,
@@ -24,7 +24,7 @@ class AboutScreen extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                'Calabash Maturity Detection uses deep learning and computer vision to assist users in assessing the maturity stage of calabash fruits.',
+                'This mobile application assists users in identifying the visually estimated maturity stages of calabash fruits through image-based detection and classification.',
                 style: Theme.of(context).textTheme.bodyLarge,
               ),
               const SizedBox(height: AppConstants.sectionSpacing),
@@ -34,16 +34,45 @@ class AboutScreen extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _sectionTitle('Project Purpose'),
+                      _sectionTitle('How It Works'),
                       const SizedBox(height: 4),
                       const Text(
-                        'This app supports faster and more accurate field decisions by classifying calabash fruits into Immature, Mature, and Overmature stages.',
+                        '1. Take a photo using the camera or choose an image from the gallery.\n'
+                        '2. The trained detection model identifies calabash fruits.\n'
+                        '3. Segmentation highlights the detected fruit regions.\n'
+                        '4. The app displays the predicted maturity stage for each detected fruit.',
                       ),
                       const SizedBox(height: AppConstants.sectionSpacing),
-                      _sectionTitle('Research Description'),
+                      _sectionTitle('Maturity Stages'),
                       const SizedBox(height: 4),
                       const Text(
-                        'The system applies a TensorFlow Lite model running directly on-device. It analyzes calabash images, identifies individual fruits using instance segmentation, and displays their predicted maturity stages.',
+                        'These are visually predicted maturity categories, based on the image:\n\n'
+                        'Immature: Predicted to be at an earlier maturity stage.\n'
+                        'Mature: Predicted to be at the mature stage.\n'
+                        'Overmature: Predicted to be beyond the mature stage.',
+                      ),
+                      const SizedBox(height: AppConstants.sectionSpacing),
+                      _sectionTitle('Understanding Model Confidence'),
+                      const SizedBox(height: 4),
+                      const Text(
+                        "The model confidence score describes how strongly the model favors a predicted maturity class. It does not represent the model's measured accuracy or statistical margin of error.",
+                      ),
+                      const SizedBox(height: AppConstants.sectionSpacing),
+                      _sectionTitle('Important Limitations'),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'This application evaluates visible surface characteristics only. It cannot determine internal fruit maturity, internal quality, or safety. Results may also be affected by lighting, image quality, background conditions, and fruit visibility.\n\n'
+                        'The application supports visual assessment and does not replace additional inspection or expert judgment.',
+                      ),
+                      const SizedBox(height: AppConstants.sectionSpacing),
+                      _sectionTitle('Tips for Better Detection'),
+                      const SizedBox(height: 4),
+                      const Text(
+                        '• Use adequate lighting.\n'
+                        '• Keep the fruit clearly visible.\n'
+                        '• Hold the camera steady.\n'
+                        '• Avoid excessive distance.\n'
+                        '• Try another angle if detection fails.',
                       ),
                       const SizedBox(height: AppConstants.sectionSpacing),
                       _sectionTitle('Developers'),
