@@ -1,5 +1,6 @@
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
+import 'package:calabash_maturity_detection/utils/app_theme.dart';
 import 'package:flutter/material.dart';
 
 class AnimatedDetectionBox extends ImplicitlyAnimatedWidget {
@@ -144,6 +145,7 @@ class DetectionBox extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = colorOverride ?? detection.maturityClass.color;
+    final labelColor = AppTheme.onStatusColor(color);
     final labelBounds = _labelBounds;
     final subtitleText = subtitle;
 
@@ -173,7 +175,7 @@ class DetectionBox extends StatelessWidget {
                 delegate: _DetectionLabelLayout(labelBounds.topLeft),
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.95),
+                    color: color,
                     borderRadius: BorderRadius.circular(6),
                     boxShadow: [
                       BoxShadow(
@@ -197,11 +199,11 @@ class DetectionBox extends StatelessWidget {
                               '#$fruitNumber ${detection.maturityClass.label} ${(detection.confidence * 100).toStringAsFixed(0)}%',
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w900,
-                          ),
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(
+                                color: labelColor,
+                                fontWeight: FontWeight.w600,
+                              ),
                         ),
                         if (subtitleText != null) ...[
                           const SizedBox(height: 1),
@@ -209,11 +211,9 @@ class DetectionBox extends StatelessWidget {
                             subtitleText,
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.86),
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800,
-                            ),
+                            style: Theme.of(
+                              context,
+                            ).textTheme.bodySmall?.copyWith(color: labelColor),
                           ),
                         ],
                       ],

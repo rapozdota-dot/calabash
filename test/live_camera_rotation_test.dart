@@ -105,7 +105,7 @@ void main() {
         final toolbar = tester.widget<AppBar>(find.byType(AppBar));
         expect(toolbar.backgroundColor, Colors.black);
         expect(toolbar.foregroundColor, Colors.white);
-        expect(toolbar.toolbarHeight, landscape ? 44 : 56);
+        expect(toolbar.toolbarHeight, landscape ? 48 : 56);
         expect(tester.takeException(), isNull);
       }
       await tester.pumpWidget(const SizedBox.shrink());

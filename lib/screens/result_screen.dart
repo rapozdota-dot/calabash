@@ -3,7 +3,9 @@ import 'package:calabash_maturity_detection/providers/detection_provider.dart';
 import 'package:calabash_maturity_detection/screens/live_camera_screen.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:calabash_maturity_detection/utils/navigation.dart';
+import 'package:calabash_maturity_detection/utils/prediction_explanations.dart';
 import 'package:calabash_maturity_detection/widgets/detection_image.dart';
+import 'package:calabash_maturity_detection/widgets/information_button.dart';
 import 'package:calabash_maturity_detection/widgets/result_card.dart';
 import 'package:calabash_maturity_detection/widgets/summary_card.dart';
 import 'package:flutter/material.dart';
@@ -45,24 +47,12 @@ class ResultScreen extends StatelessWidget {
                         if (detections.isNotEmpty &&
                             !provider.isAnalyzing &&
                             provider.errorMessage == null)
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  'Highlighted fruit regions',
-                                  style: Theme.of(context).textTheme.titleSmall
-                                      ?.copyWith(
-                                        color: AppConstants.primaryGreen,
-                                        fontWeight: FontWeight.w900,
-                                      ),
-                                ),
-                              ),
-                              const ResultInformationButton(
-                                title: 'Highlighted fruit regions',
-                                message:
-                                    'The highlighted areas show the fruit regions identified by the detection model. These outlines are predictions and may not perfectly match the actual fruit boundaries.',
-                              ),
-                            ],
+                          InformationLabel(
+                            text: 'Highlighted fruit regions',
+                            title: 'Highlighted fruit regions',
+                            message: PredictionExplanations.segmentation,
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(color: AppConstants.primaryGreen),
                           ),
                         DetectionImage(
                           imageFile: imageFile,
@@ -109,7 +99,7 @@ class ResultScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('Detection Result')),
       body: Center(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -165,12 +155,12 @@ class ResultScreen extends StatelessWidget {
         overmature: provider.overmatureCount,
       ),
       const SizedBox(height: 12),
+      _detectedList(context, detections),
+      const SizedBox(height: AppConstants.sectionSpacing),
       _recommendationCard(context, _guidanceForMultipleDetections(provider)),
       const SizedBox(height: AppConstants.sectionSpacing),
       _externalAssessmentNotice(context),
       const SizedBox(height: AppConstants.sectionSpacing),
-      _detectedList(context, detections),
-      const SizedBox(height: 6),
       _scanAgainButton(context, provider),
     ];
   }
@@ -194,10 +184,9 @@ class ResultScreen extends StatelessWidget {
           Expanded(
             child: Text(
               message,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: AppConstants.softText,
-                fontWeight: FontWeight.w700,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(color: AppConstants.softText),
             ),
           ),
         ],
@@ -220,10 +209,9 @@ class ResultScreen extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  detection.maturityClass.label.toUpperCase(),
-                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    color: color,
-                    fontWeight: FontWeight.w900,
+                  detection.maturityClass.label,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    color: AppConstants.softText,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -231,7 +219,6 @@ class ResultScreen extends StatelessWidget {
                   confidence: detection.confidence,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     color: AppConstants.softText,
-                    fontWeight: FontWeight.w800,
                   ),
                 ),
               ],
@@ -272,9 +259,7 @@ class ResultScreen extends StatelessWidget {
                   ? 'Analysis could not be completed'
                   : 'No calabash fruits detected',
               textAlign: TextAlign.center,
-              style: Theme.of(
-                context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+              style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 6),
             Text(
@@ -331,9 +316,8 @@ class ResultScreen extends StatelessWidget {
                 Flexible(
                   child: Text(
                     'Suggested guidance',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       color: AppConstants.primaryGreen,
-                      fontWeight: FontWeight.w900,
                     ),
                   ),
                 ),
@@ -342,10 +326,9 @@ class ResultScreen extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               recommendation,
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                color: AppConstants.softText,
-                fontWeight: FontWeight.w800,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(color: AppConstants.softText),
             ),
           ],
         ),
@@ -364,7 +347,7 @@ class ResultScreen extends StatelessWidget {
             Row(
               children: [
                 const Icon(
-                  Icons.info_outline_rounded,
+                  Icons.visibility_outlined,
                   color: AppConstants.primaryGreen,
                   size: 20,
                 ),
@@ -372,9 +355,8 @@ class ResultScreen extends StatelessWidget {
                 Expanded(
                   child: Text(
                     'External Assessment Only',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       color: AppConstants.primaryGreen,
-                      fontWeight: FontWeight.w900,
                     ),
                   ),
                 ),
@@ -454,10 +436,9 @@ class ResultScreen extends StatelessWidget {
       children: [
         Text(
           'Individual results',
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.w900,
-            color: AppConstants.primaryGreen,
-          ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleLarge?.copyWith(color: AppConstants.primaryGreen),
         ),
         const SizedBox(height: 8),
         ...detections.asMap().entries.map(

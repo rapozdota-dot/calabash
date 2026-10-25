@@ -8,6 +8,7 @@ import 'package:calabash_maturity_detection/providers/detection_provider.dart';
 import 'package:calabash_maturity_detection/providers/live_camera_provider.dart';
 import 'package:calabash_maturity_detection/providers/live_detection_tracker.dart';
 import 'package:calabash_maturity_detection/screens/live_camera_screen.dart';
+import 'package:calabash_maturity_detection/utils/app_theme.dart';
 import 'package:calabash_maturity_detection/screens/result_screen.dart';
 import 'package:calabash_maturity_detection/widgets/detection_box.dart';
 import 'package:flutter/material.dart';
@@ -20,7 +21,7 @@ import 'detection_provider_test.dart' show TestImageService, TestModelService;
 
 const _helpTooltip = 'About live predictions';
 const _confidenceExplanation =
-    "The displayed confidence score indicates how strongly the model favors a predicted maturity class. It does not represent the model's measured accuracy or statistical margin of error.";
+    "This is the detection model's score for the predicted maturity class of this fruit region. It describes how strongly the model supports the prediction. It does not represent measured accuracy, a calibrated probability, or a statistical margin of error.";
 const _externalReminder =
     'Maturity predictions are based on external appearance only.';
 
@@ -56,6 +57,7 @@ class _PreviewProvider extends LiveCameraProvider {
   int torchToggles = 0;
   bool torchOn = false;
   bool captureActive = false;
+  LiveCameraStatus testStatus = LiveCameraStatus.cameraReady;
   File? capturedFile;
   Completer<File?>? pendingCapture;
 
@@ -64,7 +66,7 @@ class _PreviewProvider extends LiveCameraProvider {
   @override
   CameraController get cameraController => controller;
   @override
-  LiveCameraStatus get status => LiveCameraStatus.cameraReady;
+  LiveCameraStatus get status => testStatus;
   @override
   bool get isCameraReady => true;
   @override
@@ -106,6 +108,11 @@ class _PreviewProvider extends LiveCameraProvider {
   void publish(List<LiveDetection> detections, LiveStabilityStatus stability) {
     displayed = detections;
     readiness = stability;
+    notifyListeners();
+  }
+
+  void publishStatus(LiveCameraStatus status) {
+    testStatus = status;
     notifyListeners();
   }
 }
@@ -152,6 +159,7 @@ Future<_PreviewProvider> _showCamera(
     ChangeNotifierProvider<DetectionProvider>.value(
       value: detector,
       child: MaterialApp(
+        theme: AppTheme.build(),
         builder: (context, child) => MediaQuery(
           data: MediaQuery.of(context).copyWith(
             textScaler: TextScaler.linear(textScale),
@@ -384,6 +392,21 @@ void main() {
     },
   );
 
+  testWidgets('permission recovery scrolls in landscape at 2x text', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(568, 320);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final live = await _showCamera(tester, textScale: 2);
+    live.publishStatus(LiveCameraStatus.permissionDenied);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.ensureVisible(find.text('Try Again'));
+    expect(find.text('Try Again').hitTestable(), findsOneWidget);
+  });
+
   for (final size in [
     const Size(320, 568),
     const Size(568, 320),
@@ -400,6 +423,7 @@ void main() {
         live.publish([_prediction()], LiveStabilityStatus.ready);
         await tester.pumpAndSettle();
         final help = find.byTooltip(_helpTooltip);
+        expect(tester.getSize(help).height, greaterThanOrEqualTo(48));
         final shutter = find.byType(FilledButton);
         expect(help.hitTestable(), findsOneWidget);
         expect(shutter.hitTestable(), findsOneWidget);

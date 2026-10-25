@@ -4,6 +4,7 @@ import 'package:calabash_maturity_detection/screens/live_camera_screen.dart';
 import 'package:calabash_maturity_detection/screens/result_screen.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:calabash_maturity_detection/utils/navigation.dart';
+import 'package:calabash_maturity_detection/widgets/information_button.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -17,9 +18,8 @@ class HomeScreen extends StatelessWidget {
     appBar: AppBar(
       title: const Text('Calabash'),
       actions: [
-        IconButton(
+        InformationIconButton(
           tooltip: 'About this project',
-          icon: const Icon(Icons.info_outline_rounded),
           onPressed: () =>
               Navigator.of(context).push(fadeRoute(const AboutScreen())),
         ),
@@ -67,17 +67,16 @@ class HomeScreen extends StatelessWidget {
                         const SizedBox(height: 26),
                         Text(
                           'Know your fruit.\nPlan your harvest.',
-                          style: Theme.of(context).textTheme.headlineMedium
+                          style: Theme.of(context).textTheme.headlineSmall
                               ?.copyWith(
                                 color: const Color(0xFF234429),
-                                fontWeight: FontWeight.w800,
                                 height: 1.15,
                               ),
                         ),
                         const SizedBox(height: 16),
-                        const Text(
+                        Text(
                           'Calabash Maturity Detection',
-                          style: TextStyle(fontWeight: FontWeight.w700),
+                          style: Theme.of(context).textTheme.titleMedium,
                         ),
                         const SizedBox(height: 8),
                         const Text(
@@ -93,22 +92,20 @@ class HomeScreen extends StatelessWidget {
                   const SizedBox(height: 28),
                   const _ScanActions(),
                   const SizedBox(height: 28),
-                  const Row(
+                  Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(
+                      const Icon(
                         Icons.offline_bolt_outlined,
                         size: 18,
                         color: AppConstants.mutedText,
                       ),
-                      SizedBox(width: 8),
+                      const SizedBox(width: 8),
                       Flexible(
                         child: Text(
                           'Private. Offline. Ready for the field.',
-                          style: TextStyle(
-                            color: AppConstants.mutedText,
-                            fontSize: 13,
-                          ),
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: AppConstants.mutedText),
                         ),
                       ),
                     ],

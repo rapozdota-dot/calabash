@@ -1,7 +1,9 @@
 import 'package:calabash_maturity_detection/providers/detection_provider.dart';
 import 'package:calabash_maturity_detection/screens/about_screen.dart';
 import 'package:calabash_maturity_detection/screens/home_screen.dart';
+import 'package:calabash_maturity_detection/utils/app_theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
@@ -10,7 +12,7 @@ import 'detection_provider_test.dart' show TestImageService, TestModelService;
 const _purpose =
     'This mobile application assists users in identifying the visually estimated maturity stages of calabash fruits through image-based detection and classification.';
 const _confidence =
-    "The model confidence score describes how strongly the model favors a predicted maturity class. It does not represent the model's measured accuracy or statistical margin of error.";
+    "This is the detection model's score for the predicted maturity class of this fruit region. It describes how strongly the model supports the prediction. It does not represent measured accuracy, a calibrated probability, or a statistical margin of error.";
 const _limitations =
     'This application evaluates visible surface characteristics only. It cannot determine internal fruit maturity, internal quality, or safety. Results may also be affected by lighting, image quality, background conditions, and fruit visibility.';
 const _inspection =
@@ -31,7 +33,7 @@ const _sections = [
 Future<void> _showAbout(WidgetTester tester, {double textScale = 1}) async {
   await tester.pumpWidget(
     MaterialApp(
-      theme: ThemeData(useMaterial3: true),
+      theme: AppTheme.build(),
       builder: (context, child) => MediaQuery(
         data: MediaQuery.of(
           context,
@@ -45,6 +47,26 @@ Future<void> _showAbout(WidgetTester tester, {double textScale = 1}) async {
 }
 
 void main() {
+  testWidgets('offline heading keeps whole words at narrow 2x text', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await _showAbout(tester, textScale: 2);
+    final heading = find.text('Offline Functionality');
+    await tester.ensureVisible(heading);
+    final paragraph = tester.renderObject<RenderParagraph>(heading);
+    expect(
+      paragraph.getBoxesForSelection(
+        const TextSelection(baseOffset: 8, extentOffset: 21),
+      ),
+      hasLength(1),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('About explains the current workflow and visual maturity labels', (
     tester,
   ) async {
