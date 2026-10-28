@@ -53,12 +53,22 @@ class ModelPipelineTimings {
     required this.maskReconstructionMicros,
     required this.postprocessMicros,
     required this.totalMicros,
+    this.invokeMicros,
+    this.inputTensorMicros,
+    this.outputTensorMicros,
   });
 
   final int preprocessMicros;
   final int resizeLetterboxMicros;
   final int tensorFillMicros;
+
+  /// Legacy aggregate: input assignment + invoke + output copies.
   final int inferenceMicros;
+
+  /// Interpreter.invoke() only, using boundaries on the same monotonic clock.
+  final int? invokeMicros;
+  final int? inputTensorMicros;
+  final int? outputTensorMicros;
   final int candidateParsingMicros;
   final int nmsMicros;
   final int protoExtractionMicros;
@@ -424,7 +434,7 @@ class ModelService {
       workspace: workspace,
       timings: timings,
     );
-    timings.inferenceMicros = _runInference(workspace);
+    _runInference(workspace, timings);
 
     final postprocessStopwatch = Stopwatch()..start();
     final candidateParsingStopwatch = Stopwatch()..start();
@@ -574,16 +584,22 @@ class ModelService {
     );
   }
 
-  /// Executes the interpreter with reusable input/output byte buffers and times only that call.
-  /// Both segmentation outputs are collected: detection channels and mask prototypes.
-  int _runInference(_ModelTensorWorkspace workspace) {
+  /// Keeps the legacy call-path duration while exposing its three sequential parts.
+  /// These parts sum to inferenceMicros; never add them to that aggregate again.
+  int _runInference(
+    _ModelTensorWorkspace workspace, [
+    _MutableModelPipelineTimings? measuredTimings,
+  ]) {
+    final timings = measuredTimings ?? _MutableModelPipelineTimings();
     final stopwatch = Stopwatch()..start();
     final interpreter = _interpreter!;
     // The validated, fixed-size interpreter is already allocated. Avoid the
     // plugin's ByteBuffer copyTo path, which writes output one byte at a time.
     interpreter.getInputTensor(0).data = workspace.inputBuffer.buffer
         .asUint8List();
+    final inputFinished = stopwatch.elapsedMicroseconds;
     interpreter.invoke();
+    final invokeFinished = stopwatch.elapsedMicroseconds;
     for (final output in workspace.rawOutputs.entries) {
       // Native output is volatile: bulk-copy it before the next invocation.
       TensorBufferTransfer.copyExact(
@@ -592,7 +608,11 @@ class ModelService {
       );
     }
     stopwatch.stop();
-    return stopwatch.elapsedMicroseconds;
+    timings.inferenceMicros = stopwatch.elapsedMicroseconds;
+    timings.inputTensorMicros = inputFinished;
+    timings.invokeMicros = invokeFinished - inputFinished;
+    timings.outputTensorMicros = timings.inferenceMicros - invokeFinished;
+    return timings.inferenceMicros;
   }
 
   /// Allocates tensor buffers once per interpreter and reuses them across scans/frames.
@@ -1291,6 +1311,9 @@ class _MutableModelPipelineTimings {
   int resizeLetterboxMicros = 0;
   int tensorFillMicros = 0;
   int inferenceMicros = 0;
+  int? invokeMicros;
+  int? inputTensorMicros;
+  int? outputTensorMicros;
   int candidateParsingMicros = 0;
   int nmsMicros = 0;
   int protoExtractionMicros = 0;
@@ -1305,6 +1328,9 @@ class _MutableModelPipelineTimings {
       resizeLetterboxMicros: resizeLetterboxMicros,
       tensorFillMicros: tensorFillMicros,
       inferenceMicros: inferenceMicros,
+      invokeMicros: invokeMicros,
+      inputTensorMicros: inputTensorMicros,
+      outputTensorMicros: outputTensorMicros,
       candidateParsingMicros: candidateParsingMicros,
       nmsMicros: nmsMicros,
       protoExtractionMicros: protoExtractionMicros,
