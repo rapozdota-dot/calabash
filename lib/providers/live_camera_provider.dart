@@ -861,6 +861,7 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
         image: frame.image,
         rotationDegrees: rotationDegrees,
         lensDirection: frame.camera.lensDirection,
+        collectMetrics: _performanceProbe.enabled || kDebugMode,
       );
       submitted = true;
       final modelResult = await worker.detect(workerFrame);
@@ -987,6 +988,11 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
                 ? null
                 : stages.preprocessMicros + (conversion?.totalMicros ?? 0),
             inferenceMicros: stages?.inferenceMicros,
+            modelPreprocessMicros: stages?.preprocessMicros,
+            invokeMicros: stages?.invokeMicros,
+            inputTensorMicros: stages?.inputTensorMicros,
+            outputTensorMicros: stages?.outputTensorMicros,
+            frameTransferMicros: measuredResult?.frameTransferMicros,
             postprocessMicros: stages?.postprocessMicros,
             conversionMicros: conversion?.rgbConversionMicros,
             orientationMicros: conversion?.orientationMicros,
@@ -1383,7 +1389,7 @@ class _LiveFramePerformanceSample {
   final int detectionCount;
   final CameraImageConversionTiming conversionTiming;
   final ModelPipelineTimings modelTimings;
-  final int frameTransferMicros;
+  final int? frameTransferMicros;
   final LiveInferenceBackendInfo backendInfo;
 }
 
@@ -1521,7 +1527,8 @@ class _LivePerformanceTracker {
     _lastDetectionCount = sample.detectionCount;
     _detectionsReturned += sample.detectionCount;
 
-    _frameTransfer.add(sample.frameTransferMicros);
+    final transfer = sample.frameTransferMicros;
+    if (transfer != null) _frameTransfer.add(transfer);
     _rgbConversion.add(sample.conversionTiming.rgbConversionMicros);
     _orientation.add(sample.conversionTiming.orientationMicros);
     _preprocess.add(sample.modelTimings.preprocessMicros);

@@ -10,12 +10,24 @@ on:
         type: boolean
         required: false
         default: false
+      publish_release:
+        description: Publish a GitHub Release (leave false for testing artifacts)
+        type: boolean
+        required: false
+        default: false
+      device_label:
+        description: Optional manually identified device label for CSV (e.g. iPhone 12, 4 GB RAM)
+        type: string
+        required: false
+        default: ""
 
 jobs:
   build-ios:
     runs-on: macos-15
     permissions:
       contents: write
+    env:
+      CALABASH_PERF_DEVICE: ${{ inputs.device_label }}
 
     steps:
       - name: Checkout repository
@@ -38,6 +50,39 @@ jobs:
           flutter test
           flutter test --dart-define=CALABASH_PERF=true test/performance_probe_test.dart
 
+      - name: Validate model metadata and release guards
+        run: |
+          python3 -m unittest discover -s tool -p test_validate_ios_release.py
+          mkdir -p dist
+          python3 tool/validate_ios_release.py model assets/model/model.tflite > dist/Calabash-model-metadata.json
+
+      - name: Boot an available iPhone simulator
+        run: |
+          xcrun simctl list devices available --json > "$RUNNER_TEMP/calabash-simulators.json"
+          simulator_id=$(python3 - "$RUNNER_TEMP/calabash-simulators.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as source:
+              devices = json.load(source)['devices']
+          phones = [device for runtime, items in devices.items() if '.iOS-' in runtime
+                    for device in items if device.get('isAvailable') and device['name'].startswith('iPhone')]
+          if not phones:
+              raise SystemExit('No available iPhone simulator; native model validation is required.')
+          phones.sort(key=lambda device: device['state'] != 'Booted')
+          print(phones[0]['udid'])
+          PY
+          )
+          echo "IOS_SIMULATOR_ID=$simulator_id" >> "$GITHUB_ENV"
+          state=$(xcrun simctl list devices --json | python3 -c 'import json,sys; target=sys.argv[1]; print(next(d["state"] for group in json.load(sys.stdin)["devices"].values() for d in group if d["udid"] == target))' "$simulator_id")
+          if [ "$state" != "Booted" ]; then xcrun simctl boot "$simulator_id"; fi
+          xcrun simctl bootstatus "$simulator_id" -b
+
+      - name: Smoke test the actual iOS TFLite runtime before packaging
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          flutter test integration_test/model_runtime_smoke_test.dart --no-pub \
+            -d "$IOS_SIMULATOR_ID" 2>&1 | tee dist/Calabash-model-smoke.log
+
       - name: Build unsigned iOS app
         env:
           CALABASH_PERF: ${{ inputs.performance_recording && 'true' || 'false' }}
@@ -47,6 +92,7 @@ jobs:
             --dart-define="CALABASH_PERF=$CALABASH_PERF" \
             --dart-define="CALABASH_SOURCE_REVISION=$GITHUB_SHA" \
             --dart-define="CALABASH_BUILD_NUMBER=$GITHUB_RUN_NUMBER" \
+            --dart-define="CALABASH_PERF_DEVICE=$CALABASH_PERF_DEVICE" \
             --dart-define="CALABASH_MODEL_SHA256=$model_sha"
 
       - name: Record source revision
@@ -63,6 +109,8 @@ jobs:
             echo "Commit: $GITHUB_SHA"
             echo "Build number: $GITHUB_RUN_NUMBER"
             echo "Performance recording: $CALABASH_PERF"
+            echo "Device label (manually supplied): $CALABASH_PERF_DEVICE"
+            echo "Native model smoke: passed on iOS simulator (not physical-device evidence)"
             echo "Model SHA-256: $(shasum -a 256 assets/model/model.tflite | awk '{print $1}')"
           } > dist/Calabash-source-info.txt
 
@@ -74,6 +122,14 @@ jobs:
           cd package
           zip -qry ../dist/Calabash-unsigned.ipa Payload
 
+      - name: Validate IPA structure, app identity, build number, and bundled model
+        run: |
+          model_sha=$(shasum -a 256 assets/model/model.tflite | awk '{print $1}')
+          python3 tool/validate_ios_release.py ipa dist/Calabash-unsigned.ipa \
+            --bundle-id com.example.calabashMaturityDetection \
+            --build-number "$GITHUB_RUN_NUMBER" --model-sha256 "$model_sha" \
+            > dist/Calabash-ipa-validation.json
+
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
@@ -81,14 +137,20 @@ jobs:
           path: |
             dist/Calabash-unsigned.ipa
             dist/Calabash-source-info.txt
+            dist/Calabash-model-metadata.json
+            dist/Calabash-model-smoke.log
+            dist/Calabash-ipa-validation.json
+          if-no-files-found: error
           retention-days: 14
 
       - name: Name iOS release
+        if: ${{ inputs.publish_release }}
         run: |
           version=$(sed -n 's/^version: *\([^+ ]*\).*/\1/p' pubspec.yaml)
           echo "IOS_RELEASE_NAME=Calabash v${version} - iOS Build ${GITHUB_RUN_NUMBER} - ${GITHUB_REF_NAME} - Unsigned IPA" >> "$GITHUB_ENV"
 
       - name: Publish downloadable iOS release
+        if: ${{ inputs.publish_release }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ios-${{ github.run_number }}
@@ -108,5 +170,8 @@ jobs:
           files: |
             dist/Calabash-unsigned.ipa
             dist/Calabash-source-info.txt
+            dist/Calabash-model-metadata.json
+            dist/Calabash-model-smoke.log
+            dist/Calabash-ipa-validation.json
           fail_on_unmatched_files: true
           make_latest: false

@@ -156,6 +156,9 @@ class _MeasuredWorker extends LiveInferenceWorker {
       resizeLetterboxMicros: 1,
       tensorFillMicros: 0,
       inferenceMicros: 1,
+      invokeMicros: 1,
+      inputTensorMicros: 0,
+      outputTensorMicros: 0,
       candidateParsingMicros: 0,
       nmsMicros: 0,
       protoExtractionMicros: 0,
@@ -548,6 +551,12 @@ void main() {
       expect(complete, closeTo(processing + queue, .002));
       expect(last[header.indexOf('processed_fps')], isNotEmpty);
       expect(last[header.indexOf('yolo_inference_ms')], '0.001');
+      expect(last[header.indexOf('interpreter_invoke_ms')], '0.001');
+      expect(last[header.indexOf('model_preprocess_ms')], '0.001');
+      expect(last[header.indexOf('preprocess_ms')], '0.002');
+      expect(last[header.indexOf('conversion_ms')], '0.001');
+      expect(last[header.indexOf('frame_transfer_ms')], '0.001');
+      expect(worker.received.first.transferTimer, isNotNull);
     },
   );
   test('rotation updates preview without restarting the camera', () async {

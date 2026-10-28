@@ -1,3 +1,5 @@
+import 'dart:isolate';
+
 import 'package:camera/camera.dart';
 import 'package:camera_platform_interface/camera_platform_interface.dart'
     as platform;
@@ -17,6 +19,26 @@ List<int> rgb(img.Image image) => [
 ];
 
 void main() {
+  test('frame transfer stopwatch remains monotonic across isolates', () async {
+    final timer = Stopwatch()..start();
+    final frame = LiveInferenceFrame(
+      frameId: 1,
+      transferTimer: timer,
+      width: 1,
+      height: 1,
+      format: LiveInferenceImageFormat.bgra8888,
+      rotationDegrees: 0,
+      isFrontCamera: false,
+      planes: [],
+    );
+    final before = timer.elapsedMicroseconds;
+    final transferred = await Isolate.run(
+      () => frame.transferTimer!.elapsedMicroseconds,
+    );
+    expect(transferred, greaterThanOrEqualTo(before));
+    expect(transferred, lessThanOrEqualTo(timer.elapsedMicroseconds));
+  });
+
   const back = CameraDescription(
     name: 'back',
     lensDirection: CameraLensDirection.back,

@@ -21,6 +21,9 @@ class MeasuredTestModelService extends TestModelService {
           resizeLetterboxMicros: 1,
           tensorFillMicros: 0,
           inferenceMicros: 1,
+          invokeMicros: 1,
+          inputTensorMicros: 0,
+          outputTensorMicros: 0,
           candidateParsingMicros: 0,
           nmsMicros: 0,
           protoExtractionMicros: 0,
@@ -103,6 +106,15 @@ void main() {
       final header = rows[0].split(',');
       expect(rows[1].split(',')[header.indexOf('scanning_method')], 'Gallery');
       expect(rows[1].split(',')[header.indexOf('decode_ms')], '0.001');
+      expect(
+        rows[1].split(',')[header.indexOf('interpreter_invoke_ms')],
+        '0.001',
+      );
+      expect(
+        rows[1].split(',')[header.indexOf('model_preprocess_ms')],
+        '0.001',
+      );
+      expect(rows[1].split(',')[header.indexOf('frame_transfer_ms')], isEmpty);
       expect(
         rows[1].split(',')[header.indexOf('model_initialization_ms')],
         '0.001',

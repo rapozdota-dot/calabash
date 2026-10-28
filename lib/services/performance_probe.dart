@@ -39,6 +39,11 @@ class PerformanceMeasurement {
     this.frameId,
     this.detectionCount,
     this.modelConfiguration = '',
+    this.modelPreprocessMicros,
+    this.invokeMicros,
+    this.inputTensorMicros,
+    this.outputTensorMicros,
+    this.frameTransferMicros,
   });
 
   final PerformanceScanMethod method;
@@ -63,6 +68,15 @@ class PerformanceMeasurement {
   final int? frameId;
   final int? detectionCount;
   final String modelConfiguration;
+
+  /// Model letterbox/tensor fill only. Legacy live preprocess includes conversion.
+  final int? modelPreprocessMicros;
+
+  /// Subsets of legacy inferenceMicros, not additional processing stages.
+  final int? invokeMicros;
+  final int? inputTensorMicros;
+  final int? outputTensorMicros;
+  final int? frameTransferMicros;
 
   String get exclusionReason {
     if (outcome != 'success') return outcome;
@@ -89,11 +103,31 @@ class PerformanceMeasurement {
       ?conversionMicros,
       ?orientationMicros,
       ?resultPreparationMicros,
+      ?modelPreprocessMicros,
+      ?invokeMicros,
+      ?inputTensorMicros,
+      ?outputTensorMicros,
+      ?frameTransferMicros,
     ];
     if (durations.any((value) => value < 0) ||
         inferenceMicros! > completeMicros ||
         processingMicros > completeMicros ||
         (queueMicros != null && queueMicros! > completeMicros)) {
+      return 'invalid_timing';
+    }
+    if ((invokeMicros != null && invokeMicros! > inferenceMicros!) ||
+        (inputTensorMicros != null && inputTensorMicros! > inferenceMicros!) ||
+        (outputTensorMicros != null &&
+            outputTensorMicros! > inferenceMicros!) ||
+        (modelPreprocessMicros != null &&
+            modelPreprocessMicros! > preprocessMicros!) ||
+        (frameTransferMicros != null &&
+            frameTransferMicros! > processingMicros) ||
+        (invokeMicros != null &&
+            inputTensorMicros != null &&
+            outputTensorMicros != null &&
+            invokeMicros! + inputTensorMicros! + outputTensorMicros! >
+                inferenceMicros!)) {
       return 'invalid_timing';
     }
     return '';
@@ -113,6 +147,7 @@ class PerformanceSummary {
   int totalCount = 0;
   int validCount = 0;
   int inferenceValidCount = 0;
+  int invokeValidCount = 0;
   int successfulCount = 0;
   int warmUpCount = 0;
   int errorCount = 0;
@@ -123,6 +158,10 @@ class PerformanceSummary {
   int _totalInferenceMicros = 0;
   int _totalActiveProcessingMicros = 0;
   int _inferenceWithin3000 = 0;
+  int _totalInvokeMicros = 0;
+  int _invokeWithin3000 = 0;
+  int? _minimumInvokeMicros;
+  int? _maximumInvokeMicros;
   int? _minimumMicros;
   int? _maximumMicros;
   int _within3000 = 0;
@@ -153,6 +192,18 @@ class PerformanceSummary {
       : (_totalInferenceMicros <= inferenceValidCount * 3000000
             ? 'PASS'
             : 'FAIL');
+  double? get averageInvokeMs => invokeValidCount == 0
+      ? null
+      : _totalInvokeMicros / invokeValidCount / 1000;
+  double? get minimumInvokeMs =>
+      _minimumInvokeMicros == null ? null : _minimumInvokeMicros! / 1000;
+  double? get maximumInvokeMs =>
+      _maximumInvokeMicros == null ? null : _maximumInvokeMicros! / 1000;
+  double? get invokeWithin3000Percent =>
+      invokeValidCount == 0 ? null : _invokeWithin3000 * 100 / invokeValidCount;
+  String get invokeRequirement => invokeValidCount < 30
+      ? 'NOT_ENOUGH_DATA'
+      : (_totalInvokeMicros <= invokeValidCount * 3000000 ? 'PASS' : 'FAIL');
 
   void add(PerformanceMeasurement sample) {
     totalCount++;
@@ -169,6 +220,18 @@ class PerformanceSummary {
       inferenceValidCount++;
       _totalInferenceMicros += sample.inferenceMicros!;
       if (sample.inferenceMicros! <= 3000000) _inferenceWithin3000++;
+      final invoke = sample.invokeMicros;
+      if (invoke != null) {
+        invokeValidCount++;
+        _totalInvokeMicros += invoke;
+        if (invoke <= 3000000) _invokeWithin3000++;
+        _minimumInvokeMicros = _minimumInvokeMicros == null
+            ? invoke
+            : min(_minimumInvokeMicros!, invoke);
+        _maximumInvokeMicros = _maximumInvokeMicros == null
+            ? invoke
+            : max(_maximumInvokeMicros!, invoke);
+      }
       final interval = sample.fpsIntervalMicros;
       if (interval != null && interval > 0) {
         _fpsCount++;
@@ -254,6 +317,13 @@ class PerformanceProbe with WidgetsBindingObserver {
     'included_in_inference_summary',
     'exclusion_reason',
     'successful_runs',
+    // Append-only v2 schema: existing columns retain their order and boundaries.
+    'schema_version',
+    'model_preprocess_ms',
+    'interpreter_invoke_ms',
+    'input_tensor_ms',
+    'output_tensor_ms',
+    'frame_transfer_ms',
   ];
   static const summaryHeader = [
     'session_id',
@@ -279,6 +349,13 @@ class PerformanceProbe with WidgetsBindingObserver {
     'inference_requirement',
     'required_valid_measurements',
     'dropped_recordings',
+    'schema_version',
+    'valid_interpreter_invocations',
+    'average_interpreter_invoke_ms',
+    'minimum_interpreter_invoke_ms',
+    'maximum_interpreter_invoke_ms',
+    'interpreter_invoke_within_3000_ms_percent',
+    'interpreter_invoke_requirement',
   ];
 
   final bool enabled;
@@ -376,6 +453,12 @@ class PerformanceProbe with WidgetsBindingObserver {
         sample.includedInInference,
         sample.exclusionReason,
         summary.successfulCount,
+        2,
+        _ms(sample.modelPreprocessMicros),
+        _ms(sample.invokeMicros),
+        _ms(sample.inputTensorMicros),
+        _ms(sample.outputTensorMicros),
+        _ms(sample.frameTransferMicros),
       ]),
     ));
     if (_backgrounded) {
@@ -462,6 +545,15 @@ class PerformanceProbe with WidgetsBindingObserver {
                       : 'RECORDING_INCOMPLETE',
                   30,
                   _droppedRecordings,
+                  2,
+                  s.invokeValidCount,
+                  s.averageInvokeMs,
+                  s.minimumInvokeMs,
+                  s.maximumInvokeMs,
+                  s.invokeWithin3000Percent,
+                  _droppedRecordings == 0
+                      ? s.invokeRequirement
+                      : 'RECORDING_INCOMPLETE',
                 ]);
               }).join(),
           flush: true,

@@ -66,6 +66,128 @@ void main() {
     expect(PerformanceProbe.instance.enabled, PerformanceProbe.buildEnabled);
   });
 
+  test(
+    'new timing columns preserve legacy fields and leave unknowns blank',
+    () async {
+      probe.record(
+        const PerformanceMeasurement(
+          method: PerformanceScanMethod.live,
+          outcome: 'success',
+          warmUp: false,
+          completeMicros: 10000,
+          processingMicros: 9000,
+          queueMicros: 1000,
+          preprocessMicros: 3000,
+          modelPreprocessMicros: 1000,
+          conversionMicros: 1500,
+          orientationMicros: 500,
+          inferenceMicros: 4000,
+          invokeMicros: 3000,
+          inputTensorMicros: 200,
+          outputTensorMicros: 800,
+          frameTransferMicros: 500,
+          postprocessMicros: 1000,
+        ),
+      );
+      probe.record(fixture());
+      await probe.flush();
+      final rows = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+      final header = rows.first.split(',');
+      final live = Map.fromIterables(header, rows[1].split(','));
+      final legacy = Map.fromIterables(header, rows[2].split(','));
+      expect(live['yolo_inference_ms'], '4.000');
+      expect(live['preprocess_ms'], '3.000');
+      expect(live['model_preprocess_ms'], '1.000');
+      expect(live['interpreter_invoke_ms'], '3.000');
+      expect(live['input_tensor_ms'], '0.200');
+      expect(live['output_tensor_ms'], '0.800');
+      expect(live['frame_transfer_ms'], '0.500');
+      expect(live['schema_version'], '2');
+      for (final field in [
+        'interpreter_invoke_ms',
+        'input_tensor_ms',
+        'output_tensor_ms',
+        'frame_transfer_ms',
+        'model_preprocess_ms',
+      ]) {
+        expect(legacy[field], isEmpty, reason: field);
+      }
+      // Complete elapsed time is authoritative; nested components are never added.
+      expect(
+        probe.summaryFor(PerformanceScanMethod.live).averageProcessingMs,
+        10,
+      );
+    },
+  );
+
+  test(
+    'invocation summaries retain slow stale runs and exclude warmups/errors',
+    () async {
+      PerformanceMeasurement sample(
+        int invoke, {
+        String outcome = 'success',
+        bool warmUp = false,
+      }) => PerformanceMeasurement(
+        method: PerformanceScanMethod.capture,
+        outcome: outcome,
+        warmUp: warmUp,
+        completeMicros: 5000000,
+        processingMicros: 5000000,
+        preprocessMicros: 100,
+        inferenceMicros: 4500000,
+        invokeMicros: invoke,
+        inputTensorMicros: 100,
+        outputTensorMicros: 200,
+        postprocessMicros: 100,
+      );
+      probe.record(sample(3000000));
+      probe.record(sample(4000000, outcome: 'stale'));
+      probe.record(sample(2000000, outcome: 'invalidated'));
+      probe.record(sample(1000000, warmUp: true));
+      probe.record(sample(1000000, outcome: 'error'));
+      // Old fixtures have no invocation measurement and must not become zeroes.
+      probe.record(fixture(method: PerformanceScanMethod.capture));
+      final s = probe.summaryFor(PerformanceScanMethod.capture);
+      expect(s.invokeValidCount, 3);
+      expect(s.averageInvokeMs, 3000);
+      expect(s.minimumInvokeMs, 2000);
+      expect(s.maximumInvokeMs, 4000);
+      expect(s.invokeRequirement, 'NOT_ENOUGH_DATA');
+      await probe.flush();
+      final rows = (await probe.summaryFile!.readAsString()).trim().split(
+        '\r\n',
+      );
+      final row = Map.fromIterables(
+        rows.first.split(','),
+        rows.last.split(','),
+      );
+      expect(row['valid_interpreter_invocations'], '3');
+      expect(row['average_interpreter_invoke_ms'], '3000.000000');
+      expect(row['minimum_interpreter_invoke_ms'], '2000.000000');
+      expect(row['maximum_interpreter_invoke_ms'], '4000.000000');
+    },
+  );
+
+  test('invalid invocation components are retained but excluded', () {
+    final sample = PerformanceMeasurement(
+      method: PerformanceScanMethod.live,
+      outcome: 'success',
+      warmUp: false,
+      completeMicros: 100,
+      processingMicros: 100,
+      preprocessMicros: 1,
+      inferenceMicros: 10,
+      invokeMicros: 9,
+      inputTensorMicros: 2,
+      outputTensorMicros: 1,
+      postprocessMicros: 1,
+    );
+    probe.record(sample);
+    expect(sample.exclusionReason, 'invalid_timing');
+    expect(probe.summaryFor(PerformanceScanMethod.live).invokeValidCount, 0);
+    expect(probe.summaryFor(PerformanceScanMethod.live).totalCount, 1);
+  });
+
   test('disabled recording creates no files or measurements', () async {
     final disabled = PerformanceProbe(
       enabled: false,
