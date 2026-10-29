@@ -311,7 +311,9 @@ detection. The retry buffer is bounded; overflow is counted as
    and IPA validation to succeed. Download
    `Calabash-unsigned.ipa` and `Calabash-source-info.txt` from that exact run or
    its `ios-<run-number>` release only when publication was explicitly enabled.
-   The artifact also includes model metadata, native smoke log and IPA validation JSON.
+   The IPA artifact also includes model metadata, native smoke log and IPA validation JSON.
+   The separate `calabash-ios-model-smoke-<run-number>` artifact preserves the
+   simulator smoke log even when that step fails and IPA packaging is skipped.
    Check commit, build number, model checksum and
    `Performance recording: true` in the source-info file.
 5. Before updating, background the existing app, allow its pending CSV batch to
@@ -379,14 +381,20 @@ python tool/validate_ios_release.py model assets/model/model.tflite
 flutter test integration_test/model_runtime_smoke_test.dart -d <simulator-udid>
 ```
 
-The CI smoke test validates float32 tensor signatures, finite native outputs,
-confidence channels, non-square photo preprocessing/decoding, output parsing,
-and the live isolate/BGRA/backend path. Metadata validation checks class order.
+The CI smoke test emits timestamped stage logs and validates float32 tensor
+signatures, finite native outputs, confidence channels, non-square photo
+preprocessing/decoding, output parsing, and the live isolate/BGRA/backend path.
+Metadata validation checks class order.
 Returned masks/classes are checked when the synthetic inputs produce detections;
 deterministic postprocessor tests cover mask reconstruction separately. Synthetic
 inputs do not prove fruit-recognition accuracy, real-camera behavior, iPhone 12
 performance, or iOS 26.7.1 compatibility. A native smoke failure stops the job
 before release build/IPA packaging; a queued CI configuration is not a passed run.
+The test case has a five-minute timeout; the pinned `test_api` runner also has a
+separate 12-minute suite-loading watchdog, while the GitHub Actions smoke step is
+capped at 20 minutes. Async stages have their own limits. A synchronous native
+`Interpreter.invoke()` cannot be interrupted by a Dart future timeout; its
+stage-start log and the workflow cap bound diagnosis at the runner level.
 
 ## Build APK
 
