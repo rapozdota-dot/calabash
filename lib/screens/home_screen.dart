@@ -2,12 +2,14 @@ import 'package:calabash_maturity_detection/screens/about_screen.dart';
 import 'package:calabash_maturity_detection/providers/detection_provider.dart';
 import 'package:calabash_maturity_detection/screens/live_camera_screen.dart';
 import 'package:calabash_maturity_detection/screens/result_screen.dart';
+import 'package:calabash_maturity_detection/services/performance_probe.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:calabash_maturity_detection/utils/navigation.dart';
 import 'package:calabash_maturity_detection/widgets/information_button.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -91,6 +93,8 @@ class HomeScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 28),
                   const _ScanActions(),
+                  const SizedBox(height: 16),
+                  const _ExportPerformanceButton(),
                   const SizedBox(height: 28),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -116,6 +120,66 @@ class HomeScreen extends StatelessWidget {
           ),
         ),
       ),
+    ),
+  );
+}
+
+class _ExportPerformanceButton extends StatefulWidget {
+  const _ExportPerformanceButton();
+
+  @override
+  State<_ExportPerformanceButton> createState() =>
+      _ExportPerformanceButtonState();
+}
+
+class _ExportPerformanceButtonState extends State<_ExportPerformanceButton> {
+  bool _isExporting = false;
+
+  Future<void> _export() async {
+    if (_isExporting) return;
+    setState(() => _isExporting = true);
+    try {
+      final zip = await PerformanceProbe.instance.exportZip();
+      if (!mounted) return;
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(zip.path, mimeType: 'application/zip')],
+          subject: 'Calabash performance data',
+          text: 'Performance CSV export: ${zip.uri.pathSegments.last}',
+        ),
+      );
+      if (!mounted) return;
+      final message = switch (result.status) {
+        ShareResultStatus.success => 'Performance ZIP shared.',
+        ShareResultStatus.dismissed =>
+          'Sharing was cancelled. The ZIP remains saved in app storage.',
+        ShareResultStatus.unavailable =>
+          'The ZIP is saved in app storage, but sharing is unavailable.',
+      };
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Performance export failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => OutlinedButton.icon(
+    onPressed: _isExporting ? null : _export,
+    icon: _isExporting
+        ? const SizedBox.square(
+            dimension: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : const Icon(Icons.file_download_outlined),
+    label: Text(
+      _isExporting ? 'Preparing Performance ZIP...' : 'Export Performance Data',
     ),
   );
 }

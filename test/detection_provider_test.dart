@@ -41,6 +41,14 @@ class MeasuredTestModelService extends TestModelService {
   }
 }
 
+class FailingMeasuredTestModelService extends MeasuredTestModelService {
+  @override
+  Future<PhotoDetectionResult> detectFruitsWithMetrics(File imageFile) async {
+    calls++;
+    throw StateError('fixture inference failure');
+  }
+}
+
 class TestImageService extends ImageService {
   TestImageService(this.pick);
   final Future<File?> Function() pick;
@@ -146,6 +154,41 @@ void main() {
       expect(await provider.scanFromSource(ImageSource.gallery), isFalse);
       expect(probe.summaryFor(PerformanceScanMethod.gallery).totalCount, 0);
       expect(probe.summaryFor(PerformanceScanMethod.capture).totalCount, 1);
+    },
+  );
+
+  test(
+    'failed photo processing is recorded once with its failure outcome',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'calabash-failed-photo-test-',
+      );
+      final probe = PerformanceProbe(
+        enabled: true,
+        documentsDirectory: () async => directory,
+      );
+      final provider = DetectionProvider(
+        modelService: FailingMeasuredTestModelService(),
+        imageService: TestImageService(() async => File('failed.jpg')),
+        performanceProbe: probe,
+      );
+      addTearDown(() async {
+        provider.dispose();
+        await probe.close();
+        await directory.delete(recursive: true);
+      });
+
+      expect(await provider.scanFromSource(ImageSource.gallery), isFalse);
+      expect(probe.summaryFor(PerformanceScanMethod.gallery).totalCount, 1);
+      await probe.flush();
+      final rows = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+      expect(rows, hasLength(2));
+      final header = rows.first.split(',');
+      final values = rows.last.split(',');
+      expect(values[header.indexOf('scanning_method')], 'Gallery');
+      expect(values[header.indexOf('outcome')], 'error');
+      expect(values[header.indexOf('complete_processing_ms')], isNotEmpty);
+      expect(values[header.indexOf('yolo_inference_ms')], isEmpty);
     },
   );
 
