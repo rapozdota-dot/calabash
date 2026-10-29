@@ -256,10 +256,20 @@ class PerformanceSummary {
   }
 }
 
+class NoPerformanceDataException implements Exception {
+  const NoPerformanceDataException();
+
+  static const message =
+      'No performance data recorded yet. Run Live Detection, Capture, or Gallery detection, then export again.';
+
+  @override
+  String toString() => message;
+}
+
 /// Adapts the existing measurement branch's CALABASH_PERF opt-in to persistent CSV.
 /// Call record only AFTER stopping processing timers. File I/O is serialized,
 /// asynchronous and batched; failures never propagate into camera/photo handling.
-class PerformanceProbe with WidgetsBindingObserver {
+class PerformanceProbe extends ChangeNotifier with WidgetsBindingObserver {
   PerformanceProbe({
     required this.enabled,
     Future<Directory> Function()? documentsDirectory,
@@ -395,26 +405,55 @@ class PerformanceProbe with WidgetsBindingObserver {
   PerformanceSummary summaryFor(PerformanceScanMethod method) =>
       _summaries[method]!;
 
+  int measurementCountFor(PerformanceScanMethod method) =>
+      _summaries[method]!.totalCount;
+
+  int get totalMeasurementCount => PerformanceScanMethod.values.fold<int>(
+    0,
+    (total, method) => total + measurementCountFor(method),
+  );
+
+  int get _persistedMeasurementCount => PerformanceScanMethod.values.fold<int>(
+    0,
+    (total, method) => total + _persistedSummaries[method]!.totalCount,
+  );
+
+  // TEMPORARY: remove after validating the installed iOS diagnostic build.
+  void _diagnostic(String message) =>
+      debugPrint('[CALABASH_PERF_DIAG] $message');
+
   void attachLifecycle() {
     if (!enabled || _observing) return;
     WidgetsBinding.instance.addObserver(this);
     _observing = true;
-    unawaited(flush());
+    _diagnostic('lifecycle_attached session=$sessionId enabled=$enabled');
+    unawaited(flush(reason: 'startup'));
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _backgrounded = state != AppLifecycleState.resumed;
-    if (_backgrounded) unawaited(flush());
+    if (_backgrounded) unawaited(flush(reason: 'lifecycle_background'));
   }
 
   String? record(PerformanceMeasurement sample) {
-    if (!enabled || _closed) return null;
+    if (!enabled || _closed) {
+      _diagnostic(
+        'record_skipped session=$sessionId enabled=$enabled closed=$_closed '
+        'workflow=${sample.method.label}',
+      );
+      return null;
+    }
+    final countBefore = totalMeasurementCount;
     // Bound memory if storage is unavailable for an extended period.
     if (_pending.length >= 4096) {
       _droppedRecordings++;
       _reportError(
         StateError('Performance buffer full; export is incomplete.'),
+      );
+      _diagnostic(
+        'record_dropped session=$sessionId workflow=${sample.method.label} '
+        'count_before=$countBefore reason=buffer_full',
       );
       return null;
     }
@@ -468,10 +507,19 @@ class PerformanceProbe with WidgetsBindingObserver {
       ]),
     ));
     if (_backgrounded) {
-      unawaited(flush());
+      unawaited(flush(reason: 'background_measurement'));
     } else {
-      _flushTimer ??= Timer(flushInterval, () => unawaited(flush()));
+      _flushTimer ??= Timer(
+        flushInterval,
+        () => unawaited(flush(reason: 'batch_timer')),
+      );
     }
+    _diagnostic(
+      'recorded session=$sessionId workflow=${sample.method.label} '
+      'outcome=${sample.outcome} count_before=$countBefore '
+      'count_after=$totalMeasurementCount pending=${_pending.length}',
+    );
+    notifyListeners();
     return id;
   }
 
@@ -498,12 +546,25 @@ class PerformanceProbe with WidgetsBindingObserver {
     await raw.writeAsString(_csv(rawHeader), flush: true);
     rawFile = raw;
     summaryFile = File('${stem}_summary.csv');
+    _diagnostic(
+      'source_files_created session=$sessionId raw_path=${rawFile!.path} '
+      'summary_path=${summaryFile!.path}',
+    );
   }
 
-  Future<void> flush() {
-    if (!enabled) return Future<void>.value();
+  Future<void> flush({String reason = 'manual'}) {
+    if (!enabled) {
+      _diagnostic(
+        'flush_skipped session=$sessionId reason=$reason enabled=false',
+      );
+      return Future<void>.value();
+    }
     _flushTimer?.cancel();
     _flushTimer = null;
+    _diagnostic(
+      'flush_started session=$sessionId reason=$reason '
+      'pending=${_pending.length} persisted=$_persistedMeasurementCount',
+    );
     _writeTail = _writeTail.then((_) async {
       var rawWritten = false;
       final batch = List.of(_pending);
@@ -564,9 +625,22 @@ class PerformanceProbe with WidgetsBindingObserver {
               }).join(),
           flush: true,
         );
-        lastError = null;
+        if (lastError != null) {
+          lastError = null;
+          notifyListeners();
+        }
+        _diagnostic(
+          'flush_completed session=$sessionId reason=$reason '
+          'batch_rows=${batch.length} pending=${_pending.length} '
+          'persisted=$_persistedMeasurementCount',
+        );
       } catch (error) {
         if (!rawWritten) _pending.insertAll(0, batch);
+        _diagnostic(
+          'flush_failed session=$sessionId reason=$reason '
+          'error_type=${error.runtimeType} raw_written=$rawWritten '
+          'retained_pending=${_pending.length}',
+        );
         _reportError(error);
       }
     });
@@ -577,7 +651,7 @@ class PerformanceProbe with WidgetsBindingObserver {
     _closed = true;
     _flushTimer?.cancel();
     if (_observing) WidgetsBinding.instance.removeObserver(this);
-    await flush();
+    await flush(reason: 'close');
   }();
 
   /// Flushes source CSVs and creates a shareable ZIP without mutating them.
@@ -588,9 +662,24 @@ class PerformanceProbe with WidgetsBindingObserver {
       throw StateError('Performance recording is not enabled in this build.');
     }
 
-    await flush();
+    _diagnostic(
+      'export_started session=$sessionId enabled=$enabled '
+      'measurements=$totalMeasurementCount pending=${_pending.length}',
+    );
+    await flush(reason: 'export');
     if (lastError != null) {
+      _diagnostic(
+        'export_aborted session=$sessionId reason=flush_error '
+        'measurements=$_persistedMeasurementCount',
+      );
       throw StateError('Performance data could not be flushed: $lastError');
+    }
+    if (_persistedMeasurementCount == 0) {
+      _diagnostic(
+        'export_aborted session=$sessionId reason=no_measurements '
+        'pending=${_pending.length} persisted=0',
+      );
+      throw const NoPerformanceDataException();
     }
 
     final raw = rawFile;
@@ -598,6 +687,11 @@ class PerformanceProbe with WidgetsBindingObserver {
     if (raw == null || summary == null) {
       throw StateError('Performance CSV files were not initialized.');
     }
+
+    _diagnostic(
+      'export_sources session=$sessionId measurements=$_persistedMeasurementCount '
+      'raw_path=${raw.path} summary_path=${summary.path}',
+    );
 
     final exportsDirectory = await Directory(
       '${raw.parent.path}/exports',
@@ -613,6 +707,11 @@ class PerformanceProbe with WidgetsBindingObserver {
           'calabash_performance_${timestamp}_${sessionId}_${++_exportSequence}.zip';
       zipFile = File('${exportsDirectory.path}/$filename');
     } while (await zipFile.exists());
+
+    _diagnostic(
+      'export_target session=$sessionId zip_path=${zipFile.path} '
+      'source_measurements=$_persistedMeasurementCount',
+    );
 
     final stagingDirectory = await Directory(
       '${exportsDirectory.path}/.staging_${sessionId}_$_exportSequence',
@@ -650,8 +749,17 @@ class PerformanceProbe with WidgetsBindingObserver {
         summary.uri.pathSegments.last,
         metadata,
       ]);
+      _diagnostic(
+        'export_completed session=$sessionId zip_path=${zipFile.path} '
+        'raw_path=${raw.path} summary_path=${summary.path} '
+        'measurements=$_persistedMeasurementCount',
+      );
       return zipFile;
-    } catch (_) {
+    } catch (error) {
+      _diagnostic(
+        'export_failed session=$sessionId error_type=${error.runtimeType} '
+        'zip_path=${zipFile.path}',
+      );
       if (await zipFile.exists()) await zipFile.delete();
       rethrow;
     } finally {
@@ -686,9 +794,10 @@ class PerformanceProbe with WidgetsBindingObserver {
   void _reportError(Object error) {
     final message = '$error';
     if (lastError != message) {
-      debugPrint('CALABASH_PERF storage error: $message');
+      _diagnostic('storage_error error_type=${error.runtimeType}');
+      lastError = message;
+      notifyListeners();
     }
-    lastError = message;
   }
 
   static String? _ms(int? micros) =>
