@@ -31,7 +31,7 @@ The app expects a YOLOv8 segmentation TFLite model with:
 
 The bundled model is `latest14_10.tflite` (trained October 14, 2026).
 It uses channel-first input and prototypes. Its SHA-256 is
-`2e377b3b81edc3398d9d3ebf41f77dd7ad46d60a321f27ddc499a51ba9e68547`.
+`03d8d2dfbc5c385b41056e7d14aac22d3bf489ebc5ce5c7d1ad1d58c12d0c9d3`.
 Android and iOS bundle this same asset through `pubspec.yaml`; live camera,
 capture, and gallery scans use the shared inference pipeline. Updating this
 asset applies the model weights to both platforms without separate model copies.
@@ -239,8 +239,13 @@ hardware model/RAM are not automatically detected or hardcoded.
 The summary contains separate Live, Gallery and Capture rows: successful,
 valid/excluded/warm-up/error/stale/invalidated counts; complete-processing
 mean/minimum/maximum; processing mean excluding queue time; inference mean;
-processed throughput; separate processing/inference percentages within 3,000 ms;
-and the average-inference requirement verdict. The threshold is inclusive.
+sampled inference P50/P90/P95; processed throughput; separate
+processing/inference percentages within 3,000 ms; and the average-inference
+requirement verdict. The threshold is inclusive. Percentiles use a uniform
+reservoir sample capped at 4,096 valid inference timings per method, keeping
+summary memory bounded during long live sessions. They are exact when a method
+has at most 4,096 valid timings; for longer sessions, use raw rows for exact
+offline percentile calculations.
 The verdict is `NOT_ENOUGH_DATA` until 30 valid **inference** samples exist.
 Collect at least 30 valid prepared-result samples per requested method as well;
 warm-ups do not count toward that target. There is no 30-sample upper limit.

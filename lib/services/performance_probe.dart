@@ -110,6 +110,8 @@ class PerformanceMeasurement {
 
 /// Uses all valid raw samples, never averages of rounded reporting windows.
 class PerformanceSummary {
+  static const _inferenceReservoirCapacity = 4096;
+
   int totalCount = 0;
   int validCount = 0;
   int inferenceValidCount = 0;
@@ -128,6 +130,9 @@ class PerformanceSummary {
   int _within3000 = 0;
   int _fpsCount = 0;
   int _fpsIntervalMicros = 0;
+  int _inferenceSamplesSeen = 0;
+  final List<int> _inferenceReservoir = [];
+  final Random _random = Random();
 
   int get excludedCount => totalCount - validCount;
   double? get averageProcessingMs =>
@@ -139,6 +144,16 @@ class PerformanceSummary {
   double? get averageInferenceMs => inferenceValidCount == 0
       ? null
       : _totalInferenceMicros / inferenceValidCount / 1000;
+  (double?, double?, double?) get sampledInferencePercentiles {
+    if (_inferenceReservoir.isEmpty) return (null, null, null);
+    final sorted = List<int>.of(_inferenceReservoir)..sort();
+    return (
+      _sampledInferencePercentile(sorted, 0.50),
+      _sampledInferencePercentile(sorted, 0.90),
+      _sampledInferencePercentile(sorted, 0.95),
+    );
+  }
+
   double? get averageActiveProcessingMs =>
       validCount == 0 ? null : _totalActiveProcessingMicros / validCount / 1000;
   double? get inferenceWithin3000Percent => inferenceValidCount == 0
@@ -168,6 +183,7 @@ class PerformanceSummary {
     if (sample.includedInInference) {
       inferenceValidCount++;
       _totalInferenceMicros += sample.inferenceMicros!;
+      _recordInferenceSample(sample.inferenceMicros!);
       if (sample.inferenceMicros! <= 3000000) _inferenceWithin3000++;
       final interval = sample.fpsIntervalMicros;
       if (interval != null && interval > 0) {
@@ -186,6 +202,27 @@ class PerformanceSummary {
         ? sample.completeMicros
         : max(_maximumMicros!, sample.completeMicros);
     if (sample.completeMicros <= 3000000) _within3000++;
+  }
+
+  void _recordInferenceSample(int micros) {
+    _inferenceSamplesSeen++;
+    if (_inferenceReservoir.length < _inferenceReservoirCapacity) {
+      _inferenceReservoir.add(micros);
+      return;
+    }
+
+    // Reservoir sampling keeps summary memory fixed during long live sessions.
+    final replacement = _random.nextInt(_inferenceSamplesSeen);
+    if (replacement < _inferenceReservoirCapacity) {
+      _inferenceReservoir[replacement] = micros;
+    }
+  }
+
+  double _sampledInferencePercentile(List<int> sorted, double percentile) {
+    final index = ((sorted.length * percentile).ceil() - 1)
+        .clamp(0, sorted.length - 1)
+        .toInt();
+    return sorted[index] / 1000;
   }
 }
 
@@ -273,6 +310,9 @@ class PerformanceProbe with WidgetsBindingObserver {
     'minimum_complete_processing_ms',
     'maximum_complete_processing_ms',
     'average_yolo_inference_ms',
+    'sampled_yolo_inference_p50_ms',
+    'sampled_yolo_inference_p90_ms',
+    'sampled_yolo_inference_p95_ms',
     'average_processed_fps',
     'complete_processing_within_3000_ms_percent',
     'inference_within_3000_ms_percent',
@@ -436,6 +476,7 @@ class PerformanceProbe with WidgetsBindingObserver {
           _csv(summaryHeader) +
               PerformanceScanMethod.values.map((method) {
                 final s = _persistedSummaries[method]!;
+                final inferencePercentiles = s.sampledInferencePercentiles;
                 return _csv([
                   sessionId,
                   method.label,
@@ -454,6 +495,9 @@ class PerformanceProbe with WidgetsBindingObserver {
                   s.minimumProcessingMs,
                   s.maximumProcessingMs,
                   s.averageInferenceMs,
+                  inferencePercentiles.$1,
+                  inferencePercentiles.$2,
+                  inferencePercentiles.$3,
                   s.averageFps,
                   s.processingWithin3000Percent,
                   s.inferenceWithin3000Percent,
