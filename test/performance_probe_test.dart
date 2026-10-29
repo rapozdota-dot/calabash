@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:calabash_maturity_detection/services/performance_probe.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/widgets.dart';
@@ -198,7 +200,147 @@ void main() {
     expect(disabled.summaryFor(PerformanceScanMethod.gallery).totalCount, 0);
     expect(disabled.lastError, isNull);
     expect(await directory.list().toList(), isEmpty);
+    await expectLater(disabled.exportZip(), throwsA(isA<StateError>()));
     await disabled.close();
+  });
+
+  test(
+    'raw schema stays at 40 columns with one aligned row per workflow',
+    () async {
+      for (final method in PerformanceScanMethod.values) {
+        probe.record(fixture(method: method));
+      }
+      await probe.flush();
+
+      final rows = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+      final header = rows.first.split(',');
+      expect(header, hasLength(40));
+      expect(rows, hasLength(4));
+      for (final row in rows.skip(1)) {
+        expect(row.split(','), hasLength(40));
+      }
+      final methodColumn = header.indexOf('scanning_method');
+      expect(rows.skip(1).map((row) => row.split(',')[methodColumn]), [
+        'Live',
+        'Gallery',
+        'Capture',
+      ]);
+    },
+  );
+
+  test(
+    'export flushes pending rows and packages current CSVs and metadata',
+    () async {
+      probe.record(fixture(method: PerformanceScanMethod.live));
+      probe.record(
+        fixture(method: PerformanceScanMethod.capture, outcome: 'error'),
+      );
+
+      final firstExport = await probe.exportZip();
+      final sourceRawBefore = await probe.rawFile!.readAsBytes();
+      final sourceSummaryBefore = await probe.summaryFile!.readAsBytes();
+      final firstArchive = ZipDecoder().decodeBytes(
+        await firstExport.readAsBytes(),
+      );
+      final rawName = probe.rawFile!.uri.pathSegments.last;
+      final summaryName = probe.summaryFile!.uri.pathSegments.last;
+      expect(
+        firstArchive.files.map((file) => file.name),
+        containsAll([rawName, summaryName, 'session_metadata.json']),
+      );
+      final raw = utf8.decode(
+        firstArchive.findFile(rawName)!.content as List<int>,
+      );
+      expect(raw.trim().split('\r\n'), hasLength(3));
+      final rawRows = raw.trim().split('\r\n');
+      final rawHeader = rawRows.first.split(',');
+      final methodIndex = rawHeader.indexOf('scanning_method');
+      final outcomeIndex = rawHeader.indexOf('outcome');
+      expect(rawRows[1].split(',')[methodIndex], 'Live');
+      expect(rawRows[2].split(',')[methodIndex], 'Capture');
+      expect(rawRows[2].split(',')[outcomeIndex], 'error');
+      final metadata =
+          jsonDecode(
+                utf8.decode(
+                  firstArchive.findFile('session_metadata.json')!.content
+                      as List<int>,
+                ),
+              )
+              as Map<String, dynamic>;
+      expect(metadata['session_id'], 'fixture-one');
+      expect(metadata['measurement_count'], 2);
+      expect(metadata['raw_csv'], rawName);
+      expect(metadata['summary_csv'], summaryName);
+      final summary = utf8.decode(
+        firstArchive.findFile(summaryName)!.content as List<int>,
+      );
+      expect(summary.trim().split('\r\n'), hasLength(4));
+      expect(summary.trim().split('\r\n').first.split(','), hasLength(30));
+
+      final secondExport = await probe.exportZip();
+      expect(secondExport.path, isNot(firstExport.path));
+      expect(await probe.rawFile!.readAsBytes(), sourceRawBefore);
+      expect(await probe.summaryFile!.readAsBytes(), sourceSummaryBefore);
+      final secondArchive = ZipDecoder().decodeBytes(
+        await secondExport.readAsBytes(),
+      );
+      expect(
+        utf8
+            .decode(secondArchive.findFile(rawName)!.content as List<int>)
+            .trim()
+            .split('\r\n'),
+        hasLength(3),
+      );
+    },
+  );
+
+  test(
+    'an empty session exports valid empty CSVs and a zero-count summary',
+    () async {
+      final exported = await probe.exportZip();
+      final archive = ZipDecoder().decodeBytes(await exported.readAsBytes());
+      expect(archive.files, hasLength(3));
+      final raw = utf8.decode(
+        archive.findFile(probe.rawFile!.uri.pathSegments.last)!.content
+            as List<int>,
+      );
+      expect(raw.trim().split('\r\n'), hasLength(1));
+      final summary = utf8.decode(
+        archive.findFile(probe.summaryFile!.uri.pathSegments.last)!.content
+            as List<int>,
+      );
+      expect(summary.trim().split('\r\n'), hasLength(4));
+      for (final row in summary.trim().split('\r\n').skip(1)) {
+        expect(row.split(',').first, 'fixture-one');
+        expect(row.split(',')[2], '0');
+      }
+    },
+  );
+
+  test(
+    'export reports a recorder flush failure instead of returning a ZIP',
+    () async {
+      final unavailable = PerformanceProbe(
+        enabled: true,
+        documentsDirectory: () async =>
+            throw FileSystemException('unavailable'),
+        sessionId: 'unavailable',
+      );
+      unavailable.record(fixture());
+      await expectLater(unavailable.exportZip(), throwsA(isA<StateError>()));
+      expect(unavailable.lastError, isNotNull);
+      await unavailable.close();
+    },
+  );
+
+  test('export reports ZIP destination errors', () async {
+    await probe.flush();
+    final exportDestination = File(
+      '${directory.path}/calabash_performance/exports',
+    );
+    await exportDestination.writeAsString('not a directory');
+
+    await expectLater(probe.exportZip(), throwsA(isA<FileSystemException>()));
   });
 
   test(

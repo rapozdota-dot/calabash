@@ -1,7 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart' show ZipFileEncoder;
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -275,6 +279,7 @@ class PerformanceProbe with WidgetsBindingObserver {
            '${const String.fromEnvironment('CALABASH_PERF_DEVICE')} ${Platform.operatingSystemVersion}; processors=${Platform.numberOfProcessors}'
                .trim();
 
+  /// Research runs explicitly opt in so ordinary app/test runs stay untouched.
   static const buildEnabled = bool.fromEnvironment('CALABASH_PERF');
   static final instance = PerformanceProbe(enabled: buildEnabled);
   static const sourceRevision = String.fromEnvironment(
@@ -381,6 +386,7 @@ class PerformanceProbe with WidgetsBindingObserver {
   File? summaryFile;
   String? lastError;
   int _sequence = 0;
+  int _exportSequence = 0;
   int _droppedRecordings = 0;
   bool _closed = false;
   bool _observing = false;
@@ -574,6 +580,109 @@ class PerformanceProbe with WidgetsBindingObserver {
     await flush();
   }();
 
+  /// Flushes source CSVs and creates a shareable ZIP without mutating them.
+  /// ZIP compression runs in a background isolate and the returned file stays
+  /// in Documents/calabash_performance/exports until the user removes it.
+  Future<File> exportZip() async {
+    if (!enabled) {
+      throw StateError('Performance recording is not enabled in this build.');
+    }
+
+    await flush();
+    if (lastError != null) {
+      throw StateError('Performance data could not be flushed: $lastError');
+    }
+
+    final raw = rawFile;
+    final summary = summaryFile;
+    if (raw == null || summary == null) {
+      throw StateError('Performance CSV files were not initialized.');
+    }
+
+    final exportsDirectory = await Directory(
+      '${raw.parent.path}/exports',
+    ).create(recursive: true);
+    final exportedAt = DateTime.now().toUtc();
+    final timestamp = exportedAt.toIso8601String().replaceAll(
+      RegExp(r'[^0-9TZ]'),
+      '-',
+    );
+    late File zipFile;
+    do {
+      final filename =
+          'calabash_performance_${timestamp}_${sessionId}_${++_exportSequence}.zip';
+      zipFile = File('${exportsDirectory.path}/$filename');
+    } while (await zipFile.exists());
+
+    final stagingDirectory = await Directory(
+      '${exportsDirectory.path}/.staging_${sessionId}_$_exportSequence',
+    ).create();
+    final metadata = jsonEncode({
+      'session_id': sessionId,
+      'recording_enabled': enabled,
+      'schema_version': 2,
+      'started_at_utc': startedAt.toIso8601String(),
+      'exported_at_utc': exportedAt.toIso8601String(),
+      'platform': Platform.operatingSystem,
+      'device_information': deviceInformation,
+      'source_revision': sourceRevision,
+      'build_number': buildNumber,
+      'model_sha256': modelSha256,
+      'measurement_count': PerformanceScanMethod.values.fold<int>(
+        0,
+        (count, method) => count + _persistedSummaries[method]!.totalCount,
+      ),
+      'measurement_counts_by_workflow': {
+        for (final method in PerformanceScanMethod.values)
+          method.label: _persistedSummaries[method]!.totalCount,
+      },
+      'raw_csv': raw.uri.pathSegments.last,
+      'summary_csv': summary.uri.pathSegments.last,
+    });
+
+    try {
+      final snapshots = await _snapshotFiles(raw, summary, stagingDirectory);
+      await compute(_createPerformanceZip, [
+        zipFile.path,
+        snapshots.$1.path,
+        raw.uri.pathSegments.last,
+        snapshots.$2.path,
+        summary.uri.pathSegments.last,
+        metadata,
+      ]);
+      return zipFile;
+    } catch (_) {
+      if (await zipFile.exists()) await zipFile.delete();
+      rethrow;
+    } finally {
+      if (await stagingDirectory.exists()) {
+        await stagingDirectory.delete(recursive: true);
+      }
+    }
+  }
+
+  Future<(File, File)> _snapshotFiles(
+    File raw,
+    File summary,
+    Directory stagingDirectory,
+  ) async {
+    final snapshot = _writeTail.then((_) async {
+      final rawCopy = await raw.copy(
+        '${stagingDirectory.path}/${raw.uri.pathSegments.last}',
+      );
+      final summaryCopy = await summary.copy(
+        '${stagingDirectory.path}/${summary.uri.pathSegments.last}',
+      );
+      return (rawCopy, summaryCopy);
+    });
+    // Keep the recorder's serialized write chain usable if snapshotting fails.
+    _writeTail = snapshot.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) => _reportError(error),
+    );
+    return snapshot;
+  }
+
   void _reportError(Object error) {
     final message = '$error';
     if (lastError != message) {
@@ -589,4 +698,21 @@ class PerformanceProbe with WidgetsBindingObserver {
         final text = value is double ? value.toStringAsFixed(6) : value?.toString() ?? '';
         return text.contains(RegExp('[,"\r\n]')) ? '"${text.replaceAll('"', '""')}"' : text;
       }).join(',')}\r\n';
+}
+
+Future<String> _createPerformanceZip(List<String> arguments) async {
+  final encoder = ZipFileEncoder();
+  encoder.create(arguments[0]);
+  try {
+    await encoder.addFile(File(arguments[1]), arguments[2]);
+    await encoder.addFile(File(arguments[3]), arguments[4]);
+    encoder.addArchiveFile(
+      ArchiveFile.string('session_metadata.json', arguments[5]),
+    );
+    await encoder.close();
+    return arguments[0];
+  } catch (_) {
+    await encoder.close();
+    rethrow;
+  }
 }

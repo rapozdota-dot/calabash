@@ -6,10 +6,10 @@ on:
   workflow_dispatch:
     inputs:
       performance_recording:
-        description: Record research performance CSV files (CALABASH_PERF)
+        description: Record research performance CSV files (enabled by default)
         type: boolean
         required: false
-        default: false
+        default: true
       publish_release:
         description: Publish a GitHub Release (leave false for testing artifacts)
         type: boolean
@@ -52,7 +52,7 @@ jobs:
 
       - name: Validate model metadata and release guards
         run: |
-          python3 -m unittest discover -s tool -p test_validate_ios_release.py
+          python3 -m unittest discover -s tool -p 'test_*.py'
           mkdir -p dist
           python3 tool/validate_ios_release.py model assets/model/model.tflite > dist/Calabash-model-metadata.json
 
@@ -109,6 +109,7 @@ jobs:
             echo "Commit: $GITHUB_SHA"
             echo "Build number: $GITHUB_RUN_NUMBER"
             echo "Performance recording: $CALABASH_PERF"
+            echo "Recording define: CALABASH_PERF=$CALABASH_PERF"
             echo "Device label (manually supplied): $CALABASH_PERF_DEVICE"
             echo "Native model smoke: passed on iOS simulator (not physical-device evidence)"
             echo "Model SHA-256: $(shasum -a 256 assets/model/model.tflite | awk '{print $1}')"

@@ -99,8 +99,11 @@ and rendering, so changing overlays does not decode the image again.
 
 ```bash
 flutter pub get
-flutter run
+flutter run -d <android-device-id> --dart-define=CALABASH_PERF=true
 ```
+
+Pass the recording define on research runs so debug configuration is explicit
+and reproducible. Without it, recording remains disabled.
 
 ## Live Camera Performance
 
@@ -161,14 +164,19 @@ camera FPS, AI FPS, frame counts, replacement/drop counts, pending frame count,
 conversion, preprocessing, TFLite inference, post-processing, mask, total AI,
 and result-age timings.
 
-## iOS research performance CSV recording
+## Cross-platform research performance CSV recording
 
-Performance recording is opt-in with `--dart-define=CALABASH_PERF=true`.
+Performance starts automatically during inference when the build has
+`CALABASH_PERF=true`; there is no start/stop control. Always pass that define on
+Android research runs and release builds. The manual iOS research workflow
+enables it by default and writes the selected value to
+`Calabash-source-info.txt` in the downloaded artifact. `CALABASH_PERF=false`
+remains available for intentionally unrecorded builds.
 The `PerformanceProbe` flag/timer approach from
 `codex/app-performance-measurements` is adapted here for persistent CSV;
 the existing `ModelPipelineTimings` and live conversion timers are reused.
-No detector thresholds, model weights, frame scheduling or application screens
-are changed. With the flag disabled, no performance files or additional
+No detector thresholds, model weights, or frame scheduling are changed. The
+Home screen adds an export action. With the flag disabled, no performance files or additional
 acquisition/queue timers are created. This measures **YOLOv8n-seg only**;
 MobileNetV3 is not an implemented stage.
 
@@ -233,10 +241,13 @@ calabash_performance_<UTC-date>_<session-id>_summary.csv
 
 Each launch has a new timestamp/random session ID. Existing session files are
 retained across normal restarts. Raw rows append; the paired summary is refreshed
-from successfully written rows. Export both files before uninstalling the app.
-Abrupt termination can lose a not-yet-flushed batch; background the app normally
-and allow the flush before exporting. Raw data is authoritative if a summary is
-out of date.
+from successfully written rows. Use **Export Performance Data** on Home to flush
+the recorder and share a ZIP containing the raw CSV, refreshed summary CSV, and
+`session_metadata.json`. Each export gets a unique timestamped filename;
+exporting again never appends duplicate rows or deletes source CSVs. ZIP creation
+runs off the UI isolate. Abrupt termination can lose a not-yet-flushed batch;
+lifecycle flush requests do not guarantee persistence after a force-quit or
+crash. Raw data is authoritative if a summary is out of date.
 
 Raw fields include session/measurement IDs, UTC time, platform/available OS and
 processor information, source revision, build number, model SHA-256, scan method,
@@ -283,11 +294,12 @@ detection. The retry buffer is bounded; overflow is counted as
    SHA-256 is `9408010cf54792cfefdb6af926e4249abd94a0e9f2c15d72549d58ac16539d86`.
    Keep prior measurements identified by their original build/model checksum.
 2. On GitHub, open **Actions → Build Calabash iOS IPA → Run workflow**.
-3. Select that pushed branch, enable **performance_recording**, enter the
-   **device_label**, and leave **publish_release=false** for a testing artifact.
-   Recording and publication both default to false. The workflow builds a release IPA with
-   `CALABASH_PERF=true`, embeds source/build/model identifiers in CSV metadata,
-   and preserves unsigned IPA packaging for AltStore signing.
+3. Select that pushed branch, leave **performance_recording=true** (the default),
+   enter the **device_label**, and leave **publish_release=false** for a testing
+   artifact. The workflow builds a release IPA with `CALABASH_PERF=true`, records
+   the same configuration in `Calabash-source-info.txt`, embeds source/build/model
+   identifiers in CSV metadata, and preserves unsigned IPA packaging for AltStore
+   signing.
    If the web form has not picked up the new input, use an authenticated GitHub
    CLI to dispatch the updated branch explicitly:
 
@@ -313,8 +325,9 @@ detection. The retry buffer is bounded; overflow is counted as
    Alternatively, Windows AltServer exposes **Sideload .ipa…** by holding Shift
    while clicking its tray icon. AltStore/AltServer handles signing; this
    workflow's unsigned IPA is not directly installable by itself.
-6. Open the installed build, collect live frames and manually select gallery
-   images. No additional performance panel or new detection controls appear.
+6. Open the installed build and use Live Detection, Capture, and Gallery as usual.
+   Recording starts automatically. Choose **Export Performance Data** on Home
+   when collection is complete, then save/share the ZIP from the iOS share sheet.
 
 Official installation/connection guidance:
 [AltServer](https://faq.altstore.io/altstore-classic/altserver) and
@@ -335,11 +348,14 @@ Windows development uses the GitHub macOS workflow instead of a local iOS build.
 
 ### Export and physical-device acceptance
 
-After collection, background the app normally and allow pending writes to
-finish. Open **Files → Browse → On My iPhone → Calabash Maturity Detection →
-calabash_performance** (the displayed folder name can vary). Copy/share matching
-raw and summary CSVs to your research storage, together with source-info.
-`UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace` enable this access.
+The export action flushes pending rows before creating the ZIP. The ZIP remains
+in the app Documents folder under `calabash_performance/exports/` and opens the
+native share sheet. On iOS, it can also be found in **Files → Browse → On My
+iPhone → Calabash Maturity Detection → calabash_performance → exports**;
+`UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace` expose Documents.
+On Android, the original CSVs and ZIP are in app-private Documents storage; use
+the Android share sheet to save/send the ZIP to a user-selected destination.
+Exports leave the original raw and summary files intact.
 
 On the physical iPhone, verify the folder is visible, values are recorded by
 the release build, counts reach 30 valid samples per method, prior session files
@@ -354,8 +370,10 @@ Validation commands:
 ```bash
 flutter analyze
 flutter test
+flutter test --dart-define=CALABASH_PERF=false test/performance_probe_test.dart
 flutter test --dart-define=CALABASH_PERF=true test/performance_probe_test.dart
 python -m unittest discover -s tool -p test_validate_ios_release.py
+python -m unittest tool.test_performance_recording_workflow
 python tool/validate_ios_release.py model assets/model/model.tflite
 # macOS with a booted iPhone simulator; uses the actual iOS TFLite pod:
 flutter test integration_test/model_runtime_smoke_test.dart -d <simulator-udid>

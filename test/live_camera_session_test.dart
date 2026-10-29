@@ -540,6 +540,7 @@ void main() {
       expect(summary.validCount, 1);
       await probe.flush();
       final rows = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+      expect(rows, hasLength(3), reason: 'header plus the two inferred frames');
       final header = rows[0].split(',');
       final last = rows[2].split(',');
       final complete = double.parse(
