@@ -12,6 +12,8 @@ class PerformanceRecordingWorkflowTest(unittest.TestCase):
         workflow = (ROOT / '.github' / 'workflows' / 'build-ios.yml').read_text()
         smoke_test = (ROOT / 'integration_test' / 'model_runtime_smoke_test.dart').read_text()
         smoke_support = (ROOT / 'lib' / 'integration_test' / 'smoke_stage_runner.dart').read_text()
+        model_service = (ROOT / 'lib' / 'services' / 'model_service.dart').read_text()
+        live_worker = (ROOT / 'lib' / 'services' / 'live_inference_worker.dart').read_text()
 
         self.assertRegex(
             workflow,
@@ -31,6 +33,19 @@ class PerformanceRecordingWorkflowTest(unittest.TestCase):
         self.assertIn('path: dist/Calabash-model-smoke.log', workflow)
         self.assertIn('timeout: const Timeout(smokeTestTimeout)', smoke_test)
         self.assertIn('const smokeTestTimeout = Duration(minutes: 5);', smoke_support)
+        self.assertNotRegex(smoke_test, re.compile(r'\binterpreter\.invoke\s*\('))
+        self.assertNotIn('package:tflite_flutter/tflite_flutter.dart', smoke_test)
+        self.assertNotIn('stages.runSync(', smoke_test)
+        self.assertIn('direct model inference and output validation', smoke_test)
+        self.assertIn('worker.detect(buildSmokeFrame(1))', smoke_test)
+        self.assertIn('service.detectFruitsWithMetrics(file)', smoke_test)
+        self.assertIn('worker.detect(', smoke_test)
+        self.assertIn('return compute(_inferPhoto, (', model_service)
+        self.assertIn('_isolate = await Isolate.spawn(', live_worker)
+        self.assertIn(
+            'await modelService.detectFruitsFromImageWithMetrics(',
+            live_worker,
+        )
 
     def test_research_recording_is_enabled_by_default_and_reaches_build_metadata(self):
         workflow = (ROOT / '.github' / 'workflows' / 'build-ios.yml').read_text()
