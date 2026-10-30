@@ -1,0 +1,12 @@
+Repository: rapozdota-dot/calabash
+Workflow: Build Calabash iOS IPA
+Run: 40920097713
+Ref: refs/heads/main
+Branch or tag: main
+Commit: 540c44f8a8ac345a22a44d88d85c5d788e63c8dc
+Build number: 22
+Performance recording: true
+Recording define: CALABASH_PERF=true
+Device label (manually supplied): 
+Native model smoke: passed on iOS simulator (not physical-device evidence)
+Model SHA-256: 9408010cf54792cfefdb6af926e4249abd94a0e9f2c15d72549d58ac16539d86

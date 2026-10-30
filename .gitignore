@@ -41,7 +41,7 @@ macos/Flutter/Flutter-Generated.xcconfig
 .venv312/
 __pycache__/
 *.py[cod]
-.tmp-run22-artifact/
+
 
 # Symbolication related
 app.*.symbols
