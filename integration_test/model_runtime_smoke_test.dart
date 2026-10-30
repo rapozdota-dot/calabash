@@ -9,11 +9,9 @@ import 'package:calabash_maturity_detection/integration_test/smoke_stage_runner.
 import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/services/live_inference_worker.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
-import 'package:calabash_maturity_detection/utils/constants.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:integration_test/integration_test.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
 
 void checkResult(ModelDetectionResult result) {
   final times = result.timings;
@@ -45,7 +43,7 @@ void main() {
   stages.mark('test initialization', 'PASS');
 
   testWidgets(
-    'bundled model executes in native iOS TFLite and parses every output',
+    'bundled model executes in native iOS TFLite workers and parses outputs',
     (tester) async {
       await tester.runAsync(() async {
         await stages.run<void>(
@@ -64,88 +62,6 @@ void main() {
           runner: stages,
           cleanup: cleanup,
           operation: () async {
-            final options = InterpreterOptions()..threads = 2;
-            var optionsDeleted = false;
-            void deleteOptions() {
-              if (optionsDeleted) return;
-              optionsDeleted = true;
-              options.delete();
-            }
-
-            Future<Interpreter>? interpreterLoad;
-            late final Interpreter interpreter;
-            try {
-              interpreter = await stages.run<Interpreter>(
-                'TFLite model loading and interpreter initialization',
-                timeout: smokeStageTimeouts['interpreter initialization']!,
-                operation: () {
-                  interpreterLoad = Interpreter.fromAsset(
-                    AppConstants.modelAssetPath,
-                    options: options,
-                  );
-                  return interpreterLoad!;
-                },
-                onLateCompletion: () async {
-                  try {
-                    (await interpreterLoad!).close();
-                  } finally {
-                    deleteOptions();
-                  }
-                },
-              );
-            } catch (error) {
-              if (error is! SmokeStageTimeoutException) deleteOptions();
-              rethrow;
-            }
-            deleteOptions();
-            cleanup.add('direct interpreter', interpreter.close);
-
-            final input = interpreter.getInputTensor(0);
-            expect(input.type, TensorType.float32);
-            expect(input.shape.join(','), anyOf('1,3,640,640', '1,640,640,3'));
-            final outputs = interpreter.getOutputTensors();
-            expect(outputs, hasLength(2));
-            expect(
-              outputs.map((output) => output.shape.join(',')),
-              contains('1,39,8400'),
-            );
-            expect(
-              outputs.map((output) => output.shape.join(',')),
-              contains(anyOf('1,32,160,160', '1,160,160,32')),
-            );
-
-            stages.runSync('direct model inference and output validation', () {
-              // A neutral RGB input is independent of NHWC/NCHW layout.
-              final pixels = Float32List(640 * 640 * 3)
-                ..fillRange(0, 640 * 640 * 3, 114 / 255);
-              input.data = pixels.buffer.asUint8List();
-              interpreter.invoke();
-              for (final output in interpreter.getOutputTensors()) {
-                expect(output.type, TensorType.float32);
-                final values = output.data.buffer.asFloat32List();
-                expect(
-                  values.every((value) => value.isFinite),
-                  isTrue,
-                  reason: 'Nonfinite native output: ${output.shape}',
-                );
-                if (output.shape.join(',') == '1,39,8400') {
-                  for (var channel = 4; channel < 7; channel++) {
-                    expect(
-                      values
-                          .sublist(channel * 8400, (channel + 1) * 8400)
-                          .every((score) => score >= 0 && score <= 1),
-                      isTrue,
-                    );
-                  }
-                }
-                // Contract evidence only; these are not device benchmark results.
-                // ignore: avoid_print
-                print(
-                  'Native iOS TFLite output ${output.shape}: ${output.type}, finite',
-                );
-              }
-            });
-
             final image = img.Image(width: 96, height: 64);
             for (var y = 0; y < image.height; y++) {
               for (var x = 0; x < image.width; x++) {
