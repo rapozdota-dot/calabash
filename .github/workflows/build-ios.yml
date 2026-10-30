@@ -80,15 +80,37 @@ jobs:
         timeout-minutes: 20
         run: |
           set -o pipefail
-          flutter test integration_test/model_runtime_smoke_test.dart --no-pub \
+          flutter test --verbose integration_test/model_runtime_smoke_test.dart --no-pub \
             -d "$IOS_SIMULATOR_ID" 2>&1 | tee dist/Calabash-model-smoke.log
+
+      - name: Collect iOS simulator launch diagnostics
+        if: failure()
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          diagnostic_dir=dist/Calabash-ios-simulator-diagnostics
+          mkdir -p "$diagnostic_dir"
+          xcrun simctl list devices --json > "$diagnostic_dir/devices.json" 2>&1 || true
+          if [ -n "${IOS_SIMULATOR_ID:-}" ]; then
+            xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --last 20m --style compact \
+              --predicate 'process == "Runner" OR process == "RunnerTests" OR process == "SpringBoard" OR process == "launchd_sim" OR process == "backboardd"' \
+              > "$diagnostic_dir/simulator.log" 2>&1 || true
+          fi
+          crash_reports="$HOME/Library/Logs/DiagnosticReports"
+          if [ -d "$crash_reports" ]; then
+            find "$crash_reports" -maxdepth 1 -type f -mmin -20 \
+              \( -iname '*Runner*.ips' -o -iname '*Runner*.crash' \) \
+              -exec cp -p {} "$diagnostic_dir/" \; || true
+          fi
 
       - name: Preserve iOS model smoke-test diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: calabash-ios-model-smoke-${{ github.run_number }}
-          path: dist/Calabash-model-smoke.log
+          path: |
+            dist/Calabash-model-smoke.log
+            dist/Calabash-ios-simulator-diagnostics/
           if-no-files-found: warn
           retention-days: 14
 

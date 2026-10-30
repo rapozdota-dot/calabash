@@ -22,6 +22,14 @@ class PerformanceRecordingWorkflowTest(unittest.TestCase):
                 r'\s+timeout-minutes: 20'
             ),
         )
+        self.assertIn(
+            'flutter test --verbose integration_test/model_runtime_smoke_test.dart --no-pub',
+            workflow,
+        )
+        self.assertIn('name: Collect iOS simulator launch diagnostics', workflow)
+        self.assertIn('if: failure()', workflow)
+        self.assertIn('timeout-minutes: 3', workflow)
+        self.assertIn('dist/Calabash-ios-simulator-diagnostics/', workflow)
         self.assertRegex(
             workflow,
             re.compile(
@@ -30,7 +38,7 @@ class PerformanceRecordingWorkflowTest(unittest.TestCase):
                 r'\s+uses: actions/upload-artifact@v4'
             ),
         )
-        self.assertIn('path: dist/Calabash-model-smoke.log', workflow)
+        self.assertIn('dist/Calabash-model-smoke.log', workflow)
         self.assertIn('timeout: const Timeout(smokeTestTimeout)', smoke_test)
         self.assertIn('const smokeTestTimeout = Duration(minutes: 5);', smoke_support)
         self.assertNotRegex(smoke_test, re.compile(r'\binterpreter\.invoke\s*\('))
