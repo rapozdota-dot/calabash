@@ -29,9 +29,10 @@ The app expects a YOLOv8 segmentation TFLite model with:
 - output 0: `[1, 39, 8400] float32`
 - mask prototypes: `[1, 32, 160, 160]` or `[1, 160, 160, 32] float32`
 
-The bundled model is `latest14_10.tflite` (trained October 14, 2026).
-It uses channel-first input and prototypes. Its SHA-256 is
-`03d8d2dfbc5c385b41056e7d14aac22d3bf489ebc5ce5c7d1ad1d58c12d0c9d3`.
+The bundled model is `calabash_v7_mobilenetv3small_yolov8seg_final_fp32.tflite`
+(copied to `assets/model/model.tflite`). It uses channel-first input and
+prototypes. Its SHA-256 is
+`d0a6959c7859a1fc4190fbbcd8ab95cecdfd2390aea6b7f359a86f719f8f4563`.
 Android and iOS bundle this same asset through `pubspec.yaml`; live camera,
 capture, and gallery scans use the shared inference pipeline. Updating this
 asset applies the model weights to both platforms without separate model copies.
@@ -177,8 +178,9 @@ The `PerformanceProbe` flag/timer approach from
 the existing `ModelPipelineTimings` and live conversion timers are reused.
 No detector thresholds, model weights, or frame scheduling are changed. The
 Home screen adds an export action. With the flag disabled, no performance files or additional
-acquisition/queue timers are created. This measures **YOLOv8n-seg only**;
-MobileNetV3 is not an implemented stage.
+acquisition/queue timers are created. This measures the bundled YOLOv8n-seg
+TFLite graph, including its MobileNetV3Small backbone; the app does not run a
+separate MobileNetV3 classifier stage.
 
 Home shows the enabled/disabled recording state and this launch's total and
 Live/Capture/Gallery measurement counts. If the recorder has not saved any
@@ -303,8 +305,8 @@ detection. The retry buffer is bounded; overflow is counted as
 ### Build and install through Windows/AltStore
 
 1. Review, commit and push these changes on the branch intended for measurement.
-   `ios-11` used the earlier Calabash v4 export; the current bundled v5 model's
-   SHA-256 is `9408010cf54792cfefdb6af926e4249abd94a0e9f2c15d72549d58ac16539d86`.
+   `ios-11` used the earlier Calabash v4 export; the current bundled v7 model's
+   SHA-256 is `d0a6959c7859a1fc4190fbbcd8ab95cecdfd2390aea6b7f359a86f719f8f4563`.
    Keep prior measurements identified by their original build/model checksum.
 2. On GitHub, open **Actions → Build Calabash iOS IPA → Run workflow**.
 3. Select that pushed branch, leave **performance_recording=true** (the default),

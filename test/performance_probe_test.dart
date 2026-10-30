@@ -294,7 +294,16 @@ void main() {
         firstArchive.findFile(summaryName)!.content as List<int>,
       );
       expect(summary.trim().split('\r\n'), hasLength(4));
-      expect(summary.trim().split('\r\n').first.split(','), hasLength(30));
+      final summaryHeader = summary.trim().split('\r\n').first.split(',');
+      expect(summaryHeader, hasLength(33));
+      expect(
+        summaryHeader,
+        containsAll([
+          'sampled_yolo_inference_p50_ms',
+          'sampled_yolo_inference_p90_ms',
+          'sampled_yolo_inference_p95_ms',
+        ]),
+      );
 
       final secondExport = await probe.exportZip();
       expect(secondExport.path, isNot(firstExport.path));
