@@ -144,6 +144,7 @@ LiveDetection _prediction({
 Future<_PreviewProvider> _showCamera(
   WidgetTester tester, {
   double textScale = 1,
+  bool openCameraAsRoot = false,
 }) async {
   final controller = _PreviewController();
   addTearDown(controller.dispose);
@@ -169,22 +170,25 @@ Future<_PreviewProvider> _showCamera(
           ),
           child: child!,
         ),
-        home: Builder(
-          builder: (context) => Scaffold(
-            body: TextButton(
-              onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => LiveCameraScreen(providerFactory: () => live),
+        home: openCameraAsRoot
+            ? LiveCameraScreen(providerFactory: () => live)
+            : Builder(
+                builder: (context) => Scaffold(
+                  body: TextButton(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) =>
+                            LiveCameraScreen(providerFactory: () => live),
+                      ),
+                    ),
+                    child: const Text('Open camera'),
+                  ),
                 ),
               ),
-              child: const Text('Open camera'),
-            ),
-          ),
-        ),
       ),
     ),
   );
-  await tester.tap(find.text('Open camera'));
+  if (!openCameraAsRoot) await tester.tap(find.text('Open camera'));
   await tester.pumpAndSettle();
   return live;
 }
@@ -399,10 +403,15 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    final live = await _showCamera(tester, textScale: 2);
+    final live = await _showCamera(
+      tester,
+      textScale: 2,
+      openCameraAsRoot: true,
+    );
     live.publishStatus(LiveCameraStatus.permissionDenied);
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+    expect(find.text('Try Again'), findsOneWidget);
     await tester.ensureVisible(find.text('Try Again'));
     expect(find.text('Try Again').hitTestable(), findsOneWidget);
   });

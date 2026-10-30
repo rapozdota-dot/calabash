@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:calabash_maturity_detection/services/performance_probe.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/widgets.dart';
@@ -41,6 +43,8 @@ Future<void> waitForAutomaticWrite(PerformanceProbe probe) async {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late Directory directory;
   late PerformanceProbe probe;
   setUp(() async {
@@ -66,6 +70,145 @@ void main() {
     expect(PerformanceProbe.instance.enabled, PerformanceProbe.buildEnabled);
   });
 
+  test('startup lifecycle flush creates this session CSV files', () async {
+    expect(probe.rawFile, isNull);
+    probe.attachLifecycle();
+    // A second flush is serialized after the unawaited startup flush.
+    await probe.flush();
+
+    expect(probe.lastError, isNull);
+    expect(await probe.rawFile!.exists(), isTrue);
+    expect(await probe.summaryFile!.exists(), isTrue);
+    final raw = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+    final summary = (await probe.summaryFile!.readAsString()).trim().split(
+      '\r\n',
+    );
+    expect(raw, hasLength(1));
+    expect(summary, hasLength(4));
+  });
+
+  test(
+    'new timing columns preserve legacy fields and leave unknowns blank',
+    () async {
+      probe.record(
+        const PerformanceMeasurement(
+          method: PerformanceScanMethod.live,
+          outcome: 'success',
+          warmUp: false,
+          completeMicros: 10000,
+          processingMicros: 9000,
+          queueMicros: 1000,
+          preprocessMicros: 3000,
+          modelPreprocessMicros: 1000,
+          conversionMicros: 1500,
+          orientationMicros: 500,
+          inferenceMicros: 4000,
+          invokeMicros: 3000,
+          inputTensorMicros: 200,
+          outputTensorMicros: 800,
+          frameTransferMicros: 500,
+          postprocessMicros: 1000,
+        ),
+      );
+      probe.record(fixture());
+      await probe.flush();
+      final rows = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+      final header = rows.first.split(',');
+      final live = Map.fromIterables(header, rows[1].split(','));
+      final legacy = Map.fromIterables(header, rows[2].split(','));
+      expect(live['yolo_inference_ms'], '4.000');
+      expect(live['preprocess_ms'], '3.000');
+      expect(live['model_preprocess_ms'], '1.000');
+      expect(live['interpreter_invoke_ms'], '3.000');
+      expect(live['input_tensor_ms'], '0.200');
+      expect(live['output_tensor_ms'], '0.800');
+      expect(live['frame_transfer_ms'], '0.500');
+      expect(live['schema_version'], '2');
+      for (final field in [
+        'interpreter_invoke_ms',
+        'input_tensor_ms',
+        'output_tensor_ms',
+        'frame_transfer_ms',
+        'model_preprocess_ms',
+      ]) {
+        expect(legacy[field], isEmpty, reason: field);
+      }
+      // Complete elapsed time is authoritative; nested components are never added.
+      expect(
+        probe.summaryFor(PerformanceScanMethod.live).averageProcessingMs,
+        10,
+      );
+    },
+  );
+
+  test(
+    'invocation summaries retain slow stale runs and exclude warmups/errors',
+    () async {
+      PerformanceMeasurement sample(
+        int invoke, {
+        String outcome = 'success',
+        bool warmUp = false,
+      }) => PerformanceMeasurement(
+        method: PerformanceScanMethod.capture,
+        outcome: outcome,
+        warmUp: warmUp,
+        completeMicros: 5000000,
+        processingMicros: 5000000,
+        preprocessMicros: 100,
+        inferenceMicros: 4500000,
+        invokeMicros: invoke,
+        inputTensorMicros: 100,
+        outputTensorMicros: 200,
+        postprocessMicros: 100,
+      );
+      probe.record(sample(3000000));
+      probe.record(sample(4000000, outcome: 'stale'));
+      probe.record(sample(2000000, outcome: 'invalidated'));
+      probe.record(sample(1000000, warmUp: true));
+      probe.record(sample(1000000, outcome: 'error'));
+      // Old fixtures have no invocation measurement and must not become zeroes.
+      probe.record(fixture(method: PerformanceScanMethod.capture));
+      final s = probe.summaryFor(PerformanceScanMethod.capture);
+      expect(s.invokeValidCount, 3);
+      expect(s.averageInvokeMs, 3000);
+      expect(s.minimumInvokeMs, 2000);
+      expect(s.maximumInvokeMs, 4000);
+      expect(s.invokeRequirement, 'NOT_ENOUGH_DATA');
+      await probe.flush();
+      final rows = (await probe.summaryFile!.readAsString()).trim().split(
+        '\r\n',
+      );
+      final row = Map.fromIterables(
+        rows.first.split(','),
+        rows.last.split(','),
+      );
+      expect(row['valid_interpreter_invocations'], '3');
+      expect(row['average_interpreter_invoke_ms'], '3000.000000');
+      expect(row['minimum_interpreter_invoke_ms'], '2000.000000');
+      expect(row['maximum_interpreter_invoke_ms'], '4000.000000');
+    },
+  );
+
+  test('invalid invocation components are retained but excluded', () {
+    final sample = PerformanceMeasurement(
+      method: PerformanceScanMethod.live,
+      outcome: 'success',
+      warmUp: false,
+      completeMicros: 100,
+      processingMicros: 100,
+      preprocessMicros: 1,
+      inferenceMicros: 10,
+      invokeMicros: 9,
+      inputTensorMicros: 2,
+      outputTensorMicros: 1,
+      postprocessMicros: 1,
+    );
+    probe.record(sample);
+    expect(sample.exclusionReason, 'invalid_timing');
+    expect(probe.summaryFor(PerformanceScanMethod.live).invokeValidCount, 0);
+    expect(probe.summaryFor(PerformanceScanMethod.live).totalCount, 1);
+  });
+
   test('disabled recording creates no files or measurements', () async {
     final disabled = PerformanceProbe(
       enabled: false,
@@ -76,7 +219,157 @@ void main() {
     expect(disabled.summaryFor(PerformanceScanMethod.gallery).totalCount, 0);
     expect(disabled.lastError, isNull);
     expect(await directory.list().toList(), isEmpty);
+    await expectLater(disabled.exportZip(), throwsA(isA<StateError>()));
     await disabled.close();
+  });
+
+  test(
+    'raw schema stays at 40 columns with one aligned row per workflow',
+    () async {
+      for (final method in PerformanceScanMethod.values) {
+        probe.record(fixture(method: method));
+      }
+      await probe.flush();
+
+      final rows = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+      final header = rows.first.split(',');
+      expect(header, hasLength(40));
+      expect(rows, hasLength(4));
+      for (final row in rows.skip(1)) {
+        expect(row.split(','), hasLength(40));
+      }
+      final methodColumn = header.indexOf('scanning_method');
+      expect(rows.skip(1).map((row) => row.split(',')[methodColumn]), [
+        'Live',
+        'Gallery',
+        'Capture',
+      ]);
+    },
+  );
+
+  test(
+    'export flushes pending rows and packages current CSVs and metadata',
+    () async {
+      probe.record(fixture(method: PerformanceScanMethod.live));
+      probe.record(
+        fixture(method: PerformanceScanMethod.capture, outcome: 'error'),
+      );
+
+      final firstExport = await probe.exportZip();
+      final sourceRawBefore = await probe.rawFile!.readAsBytes();
+      final sourceSummaryBefore = await probe.summaryFile!.readAsBytes();
+      final firstArchive = ZipDecoder().decodeBytes(
+        await firstExport.readAsBytes(),
+      );
+      final rawName = probe.rawFile!.uri.pathSegments.last;
+      final summaryName = probe.summaryFile!.uri.pathSegments.last;
+      expect(
+        firstArchive.files.map((file) => file.name),
+        containsAll([rawName, summaryName, 'session_metadata.json']),
+      );
+      final raw = utf8.decode(
+        firstArchive.findFile(rawName)!.content as List<int>,
+      );
+      expect(raw.trim().split('\r\n'), hasLength(3));
+      final rawRows = raw.trim().split('\r\n');
+      final rawHeader = rawRows.first.split(',');
+      final methodIndex = rawHeader.indexOf('scanning_method');
+      final outcomeIndex = rawHeader.indexOf('outcome');
+      expect(rawRows[1].split(',')[methodIndex], 'Live');
+      expect(rawRows[2].split(',')[methodIndex], 'Capture');
+      expect(rawRows[2].split(',')[outcomeIndex], 'error');
+      final metadata =
+          jsonDecode(
+                utf8.decode(
+                  firstArchive.findFile('session_metadata.json')!.content
+                      as List<int>,
+                ),
+              )
+              as Map<String, dynamic>;
+      expect(metadata['session_id'], 'fixture-one');
+      expect(metadata['measurement_count'], 2);
+      expect(metadata['raw_csv'], rawName);
+      expect(metadata['summary_csv'], summaryName);
+      final summary = utf8.decode(
+        firstArchive.findFile(summaryName)!.content as List<int>,
+      );
+      expect(summary.trim().split('\r\n'), hasLength(4));
+      expect(summary.trim().split('\r\n').first.split(','), hasLength(30));
+
+      final secondExport = await probe.exportZip();
+      expect(secondExport.path, isNot(firstExport.path));
+      expect(await probe.rawFile!.readAsBytes(), sourceRawBefore);
+      expect(await probe.summaryFile!.readAsBytes(), sourceSummaryBefore);
+      final secondArchive = ZipDecoder().decodeBytes(
+        await secondExport.readAsBytes(),
+      );
+      expect(
+        utf8
+            .decode(secondArchive.findFile(rawName)!.content as List<int>)
+            .trim()
+            .split('\r\n'),
+        hasLength(3),
+      );
+    },
+  );
+
+  test('an empty session cannot export a ZIP', () async {
+    await expectLater(
+      probe.exportZip(),
+      throwsA(isA<NoPerformanceDataException>()),
+    );
+    expect(await probe.rawFile!.exists(), isTrue);
+    expect(await probe.summaryFile!.exists(), isTrue);
+    expect(
+      await Directory('${probe.rawFile!.parent.path}/exports').exists(),
+      isFalse,
+    );
+  });
+
+  test('session measurement counts are separated by workflow', () {
+    expect(probe.totalMeasurementCount, 0);
+    for (final method in PerformanceScanMethod.values) {
+      expect(probe.measurementCountFor(method), 0);
+    }
+
+    probe.record(fixture(method: PerformanceScanMethod.live));
+    probe.record(fixture(method: PerformanceScanMethod.capture));
+    probe.record(fixture(method: PerformanceScanMethod.gallery));
+    probe.record(
+      fixture(method: PerformanceScanMethod.gallery, outcome: 'error'),
+    );
+
+    expect(probe.totalMeasurementCount, 4);
+    expect(probe.measurementCountFor(PerformanceScanMethod.live), 1);
+    expect(probe.measurementCountFor(PerformanceScanMethod.capture), 1);
+    expect(probe.measurementCountFor(PerformanceScanMethod.gallery), 2);
+  });
+
+  test(
+    'export reports a recorder flush failure instead of returning a ZIP',
+    () async {
+      final unavailable = PerformanceProbe(
+        enabled: true,
+        documentsDirectory: () async =>
+            throw FileSystemException('unavailable'),
+        sessionId: 'unavailable',
+      );
+      unavailable.record(fixture());
+      await expectLater(unavailable.exportZip(), throwsA(isA<StateError>()));
+      expect(unavailable.lastError, isNotNull);
+      await unavailable.close();
+    },
+  );
+
+  test('export reports ZIP destination errors', () async {
+    probe.record(fixture());
+    await probe.flush();
+    final exportDestination = File(
+      '${directory.path}/calabash_performance/exports',
+    );
+    await exportDestination.writeAsString('not a directory');
+
+    await expectLater(probe.exportZip(), throwsA(isA<FileSystemException>()));
   });
 
   test(

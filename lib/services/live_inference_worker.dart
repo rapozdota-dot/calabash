@@ -166,7 +166,7 @@ class LiveInferenceWorker {
 class LiveInferenceFrame {
   LiveInferenceFrame({
     required this.frameId,
-    required this.transferStartedAtMicros,
+    this.transferTimer,
     required this.width,
     required this.height,
     required this.format,
@@ -182,11 +182,12 @@ class LiveInferenceFrame {
     required CameraImage image,
     required int rotationDegrees,
     required CameraLensDirection lensDirection,
+    bool collectMetrics = false,
   }) {
-    final transferStartedAtMicros = DateTime.now().microsecondsSinceEpoch;
+    final transferTimer = collectMetrics ? (Stopwatch()..start()) : null;
     return LiveInferenceFrame(
       frameId: frameId,
-      transferStartedAtMicros: transferStartedAtMicros,
+      transferTimer: transferTimer,
       width: image.width,
       height: image.height,
       format: LiveInferenceImageFormat.fromCameraFormat(image.format.group),
@@ -208,7 +209,10 @@ class LiveInferenceFrame {
   }
 
   final int frameId;
-  final int transferStartedAtMicros;
+
+  /// Copied to the worker with the frame. Stopwatch uses a process-wide
+  /// monotonic clock, including packaging and message delivery in this span.
+  final Stopwatch? transferTimer;
   final int width;
   final int height;
   final LiveInferenceImageFormat format;
@@ -277,7 +281,7 @@ class LiveInferenceResult {
   final List<LiveInferenceDetection> detections;
   final CameraImageConversionTiming conversionTiming;
   final ModelPipelineTimings modelTimings;
-  final int frameTransferMicros;
+  final int? frameTransferMicros;
   final LiveInferenceBackendInfo backendInfo;
 
   /// Recreates UI-facing detections from the worker's transport-safe result values.
@@ -704,7 +708,7 @@ class LiveInferenceWorkerRuntime {
       throw StateError('Live inference runtime has not been initialized.');
     }
 
-    final workerReceivedAtMicros = DateTime.now().microsecondsSinceEpoch;
+    final frameTransferMicros = frame.transferTimer?.elapsedMicroseconds;
     final conversionTiming = CameraImageConversionTiming();
     final decodedFrame = frame.toImage(timing: conversionTiming);
     final modelResult = await modelService.detectFruitsFromImageWithMetrics(
@@ -720,8 +724,7 @@ class LiveInferenceWorkerRuntime {
           .toList(growable: false),
       conversionTiming: conversionTiming,
       modelTimings: modelResult.timings,
-      frameTransferMicros:
-          workerReceivedAtMicros - frame.transferStartedAtMicros,
+      frameTransferMicros: frameTransferMicros,
       backendInfo: backendInfo,
     );
   }

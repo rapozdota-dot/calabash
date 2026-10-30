@@ -1,7 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart' show ZipFileEncoder;
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -39,6 +43,11 @@ class PerformanceMeasurement {
     this.frameId,
     this.detectionCount,
     this.modelConfiguration = '',
+    this.modelPreprocessMicros,
+    this.invokeMicros,
+    this.inputTensorMicros,
+    this.outputTensorMicros,
+    this.frameTransferMicros,
   });
 
   final PerformanceScanMethod method;
@@ -63,6 +72,15 @@ class PerformanceMeasurement {
   final int? frameId;
   final int? detectionCount;
   final String modelConfiguration;
+
+  /// Model letterbox/tensor fill only. Legacy live preprocess includes conversion.
+  final int? modelPreprocessMicros;
+
+  /// Subsets of legacy inferenceMicros, not additional processing stages.
+  final int? invokeMicros;
+  final int? inputTensorMicros;
+  final int? outputTensorMicros;
+  final int? frameTransferMicros;
 
   String get exclusionReason {
     if (outcome != 'success') return outcome;
@@ -89,11 +107,31 @@ class PerformanceMeasurement {
       ?conversionMicros,
       ?orientationMicros,
       ?resultPreparationMicros,
+      ?modelPreprocessMicros,
+      ?invokeMicros,
+      ?inputTensorMicros,
+      ?outputTensorMicros,
+      ?frameTransferMicros,
     ];
     if (durations.any((value) => value < 0) ||
         inferenceMicros! > completeMicros ||
         processingMicros > completeMicros ||
         (queueMicros != null && queueMicros! > completeMicros)) {
+      return 'invalid_timing';
+    }
+    if ((invokeMicros != null && invokeMicros! > inferenceMicros!) ||
+        (inputTensorMicros != null && inputTensorMicros! > inferenceMicros!) ||
+        (outputTensorMicros != null &&
+            outputTensorMicros! > inferenceMicros!) ||
+        (modelPreprocessMicros != null &&
+            modelPreprocessMicros! > preprocessMicros!) ||
+        (frameTransferMicros != null &&
+            frameTransferMicros! > processingMicros) ||
+        (invokeMicros != null &&
+            inputTensorMicros != null &&
+            outputTensorMicros != null &&
+            invokeMicros! + inputTensorMicros! + outputTensorMicros! >
+                inferenceMicros!)) {
       return 'invalid_timing';
     }
     return '';
@@ -115,6 +153,7 @@ class PerformanceSummary {
   int totalCount = 0;
   int validCount = 0;
   int inferenceValidCount = 0;
+  int invokeValidCount = 0;
   int successfulCount = 0;
   int warmUpCount = 0;
   int errorCount = 0;
@@ -125,6 +164,10 @@ class PerformanceSummary {
   int _totalInferenceMicros = 0;
   int _totalActiveProcessingMicros = 0;
   int _inferenceWithin3000 = 0;
+  int _totalInvokeMicros = 0;
+  int _invokeWithin3000 = 0;
+  int? _minimumInvokeMicros;
+  int? _maximumInvokeMicros;
   int? _minimumMicros;
   int? _maximumMicros;
   int _within3000 = 0;
@@ -168,6 +211,18 @@ class PerformanceSummary {
       : (_totalInferenceMicros <= inferenceValidCount * 3000000
             ? 'PASS'
             : 'FAIL');
+  double? get averageInvokeMs => invokeValidCount == 0
+      ? null
+      : _totalInvokeMicros / invokeValidCount / 1000;
+  double? get minimumInvokeMs =>
+      _minimumInvokeMicros == null ? null : _minimumInvokeMicros! / 1000;
+  double? get maximumInvokeMs =>
+      _maximumInvokeMicros == null ? null : _maximumInvokeMicros! / 1000;
+  double? get invokeWithin3000Percent =>
+      invokeValidCount == 0 ? null : _invokeWithin3000 * 100 / invokeValidCount;
+  String get invokeRequirement => invokeValidCount < 30
+      ? 'NOT_ENOUGH_DATA'
+      : (_totalInvokeMicros <= invokeValidCount * 3000000 ? 'PASS' : 'FAIL');
 
   void add(PerformanceMeasurement sample) {
     totalCount++;
@@ -185,6 +240,18 @@ class PerformanceSummary {
       _totalInferenceMicros += sample.inferenceMicros!;
       _recordInferenceSample(sample.inferenceMicros!);
       if (sample.inferenceMicros! <= 3000000) _inferenceWithin3000++;
+      final invoke = sample.invokeMicros;
+      if (invoke != null) {
+        invokeValidCount++;
+        _totalInvokeMicros += invoke;
+        if (invoke <= 3000000) _invokeWithin3000++;
+        _minimumInvokeMicros = _minimumInvokeMicros == null
+            ? invoke
+            : min(_minimumInvokeMicros!, invoke);
+        _maximumInvokeMicros = _maximumInvokeMicros == null
+            ? invoke
+            : max(_maximumInvokeMicros!, invoke);
+      }
       final interval = sample.fpsIntervalMicros;
       if (interval != null && interval > 0) {
         _fpsCount++;
@@ -226,10 +293,20 @@ class PerformanceSummary {
   }
 }
 
+class NoPerformanceDataException implements Exception {
+  const NoPerformanceDataException();
+
+  static const message =
+      'No performance data recorded yet. Run Live Detection, Capture, or Gallery detection, then export again.';
+
+  @override
+  String toString() => message;
+}
+
 /// Adapts the existing measurement branch's CALABASH_PERF opt-in to persistent CSV.
 /// Call record only AFTER stopping processing timers. File I/O is serialized,
 /// asynchronous and batched; failures never propagate into camera/photo handling.
-class PerformanceProbe with WidgetsBindingObserver {
+class PerformanceProbe extends ChangeNotifier with WidgetsBindingObserver {
   PerformanceProbe({
     required this.enabled,
     Future<Directory> Function()? documentsDirectory,
@@ -249,6 +326,7 @@ class PerformanceProbe with WidgetsBindingObserver {
            '${const String.fromEnvironment('CALABASH_PERF_DEVICE')} ${Platform.operatingSystemVersion}; processors=${Platform.numberOfProcessors}'
                .trim();
 
+  /// Research runs explicitly opt in so ordinary app/test runs stay untouched.
   static const buildEnabled = bool.fromEnvironment('CALABASH_PERF');
   static final instance = PerformanceProbe(enabled: buildEnabled);
   static const sourceRevision = String.fromEnvironment(
@@ -291,6 +369,13 @@ class PerformanceProbe with WidgetsBindingObserver {
     'included_in_inference_summary',
     'exclusion_reason',
     'successful_runs',
+    // Append-only v2 schema: existing columns retain their order and boundaries.
+    'schema_version',
+    'model_preprocess_ms',
+    'interpreter_invoke_ms',
+    'input_tensor_ms',
+    'output_tensor_ms',
+    'frame_transfer_ms',
   ];
   static const summaryHeader = [
     'session_id',
@@ -319,6 +404,13 @@ class PerformanceProbe with WidgetsBindingObserver {
     'inference_requirement',
     'required_valid_measurements',
     'dropped_recordings',
+    'schema_version',
+    'valid_interpreter_invocations',
+    'average_interpreter_invoke_ms',
+    'minimum_interpreter_invoke_ms',
+    'maximum_interpreter_invoke_ms',
+    'interpreter_invoke_within_3000_ms_percent',
+    'interpreter_invoke_requirement',
   ];
 
   final bool enabled;
@@ -344,6 +436,7 @@ class PerformanceProbe with WidgetsBindingObserver {
   File? summaryFile;
   String? lastError;
   int _sequence = 0;
+  int _exportSequence = 0;
   int _droppedRecordings = 0;
   bool _closed = false;
   bool _observing = false;
@@ -352,26 +445,55 @@ class PerformanceProbe with WidgetsBindingObserver {
   PerformanceSummary summaryFor(PerformanceScanMethod method) =>
       _summaries[method]!;
 
+  int measurementCountFor(PerformanceScanMethod method) =>
+      _summaries[method]!.totalCount;
+
+  int get totalMeasurementCount => PerformanceScanMethod.values.fold<int>(
+    0,
+    (total, method) => total + measurementCountFor(method),
+  );
+
+  int get _persistedMeasurementCount => PerformanceScanMethod.values.fold<int>(
+    0,
+    (total, method) => total + _persistedSummaries[method]!.totalCount,
+  );
+
+  // TEMPORARY: remove after validating the installed iOS diagnostic build.
+  void _diagnostic(String message) =>
+      debugPrint('[CALABASH_PERF_DIAG] $message');
+
   void attachLifecycle() {
     if (!enabled || _observing) return;
     WidgetsBinding.instance.addObserver(this);
     _observing = true;
-    unawaited(flush());
+    _diagnostic('lifecycle_attached session=$sessionId enabled=$enabled');
+    unawaited(flush(reason: 'startup'));
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _backgrounded = state != AppLifecycleState.resumed;
-    if (_backgrounded) unawaited(flush());
+    if (_backgrounded) unawaited(flush(reason: 'lifecycle_background'));
   }
 
   String? record(PerformanceMeasurement sample) {
-    if (!enabled || _closed) return null;
+    if (!enabled || _closed) {
+      _diagnostic(
+        'record_skipped session=$sessionId enabled=$enabled closed=$_closed '
+        'workflow=${sample.method.label}',
+      );
+      return null;
+    }
+    final countBefore = totalMeasurementCount;
     // Bound memory if storage is unavailable for an extended period.
     if (_pending.length >= 4096) {
       _droppedRecordings++;
       _reportError(
         StateError('Performance buffer full; export is incomplete.'),
+      );
+      _diagnostic(
+        'record_dropped session=$sessionId workflow=${sample.method.label} '
+        'count_before=$countBefore reason=buffer_full',
       );
       return null;
     }
@@ -416,13 +538,28 @@ class PerformanceProbe with WidgetsBindingObserver {
         sample.includedInInference,
         sample.exclusionReason,
         summary.successfulCount,
+        2,
+        _ms(sample.modelPreprocessMicros),
+        _ms(sample.invokeMicros),
+        _ms(sample.inputTensorMicros),
+        _ms(sample.outputTensorMicros),
+        _ms(sample.frameTransferMicros),
       ]),
     ));
     if (_backgrounded) {
-      unawaited(flush());
+      unawaited(flush(reason: 'background_measurement'));
     } else {
-      _flushTimer ??= Timer(flushInterval, () => unawaited(flush()));
+      _flushTimer ??= Timer(
+        flushInterval,
+        () => unawaited(flush(reason: 'batch_timer')),
+      );
     }
+    _diagnostic(
+      'recorded session=$sessionId workflow=${sample.method.label} '
+      'outcome=${sample.outcome} count_before=$countBefore '
+      'count_after=$totalMeasurementCount pending=${_pending.length}',
+    );
+    notifyListeners();
     return id;
   }
 
@@ -449,12 +586,25 @@ class PerformanceProbe with WidgetsBindingObserver {
     await raw.writeAsString(_csv(rawHeader), flush: true);
     rawFile = raw;
     summaryFile = File('${stem}_summary.csv');
+    _diagnostic(
+      'source_files_created session=$sessionId raw_path=${rawFile!.path} '
+      'summary_path=${summaryFile!.path}',
+    );
   }
 
-  Future<void> flush() {
-    if (!enabled) return Future<void>.value();
+  Future<void> flush({String reason = 'manual'}) {
+    if (!enabled) {
+      _diagnostic(
+        'flush_skipped session=$sessionId reason=$reason enabled=false',
+      );
+      return Future<void>.value();
+    }
     _flushTimer?.cancel();
     _flushTimer = null;
+    _diagnostic(
+      'flush_started session=$sessionId reason=$reason '
+      'pending=${_pending.length} persisted=$_persistedMeasurementCount',
+    );
     _writeTail = _writeTail.then((_) async {
       var rawWritten = false;
       final batch = List.of(_pending);
@@ -506,13 +656,35 @@ class PerformanceProbe with WidgetsBindingObserver {
                       : 'RECORDING_INCOMPLETE',
                   30,
                   _droppedRecordings,
+                  2,
+                  s.invokeValidCount,
+                  s.averageInvokeMs,
+                  s.minimumInvokeMs,
+                  s.maximumInvokeMs,
+                  s.invokeWithin3000Percent,
+                  _droppedRecordings == 0
+                      ? s.invokeRequirement
+                      : 'RECORDING_INCOMPLETE',
                 ]);
               }).join(),
           flush: true,
         );
-        lastError = null;
+        if (lastError != null) {
+          lastError = null;
+          notifyListeners();
+        }
+        _diagnostic(
+          'flush_completed session=$sessionId reason=$reason '
+          'batch_rows=${batch.length} pending=${_pending.length} '
+          'persisted=$_persistedMeasurementCount',
+        );
       } catch (error) {
         if (!rawWritten) _pending.insertAll(0, batch);
+        _diagnostic(
+          'flush_failed session=$sessionId reason=$reason '
+          'error_type=${error.runtimeType} raw_written=$rawWritten '
+          'retained_pending=${_pending.length}',
+        );
         _reportError(error);
       }
     });
@@ -523,15 +695,153 @@ class PerformanceProbe with WidgetsBindingObserver {
     _closed = true;
     _flushTimer?.cancel();
     if (_observing) WidgetsBinding.instance.removeObserver(this);
-    await flush();
+    await flush(reason: 'close');
   }();
+
+  /// Flushes source CSVs and creates a shareable ZIP without mutating them.
+  /// ZIP compression runs in a background isolate and the returned file stays
+  /// in Documents/calabash_performance/exports until the user removes it.
+  Future<File> exportZip() async {
+    if (!enabled) {
+      throw StateError('Performance recording is not enabled in this build.');
+    }
+
+    _diagnostic(
+      'export_started session=$sessionId enabled=$enabled '
+      'measurements=$totalMeasurementCount pending=${_pending.length}',
+    );
+    await flush(reason: 'export');
+    if (lastError != null) {
+      _diagnostic(
+        'export_aborted session=$sessionId reason=flush_error '
+        'measurements=$_persistedMeasurementCount',
+      );
+      throw StateError('Performance data could not be flushed: $lastError');
+    }
+    if (_persistedMeasurementCount == 0) {
+      _diagnostic(
+        'export_aborted session=$sessionId reason=no_measurements '
+        'pending=${_pending.length} persisted=0',
+      );
+      throw const NoPerformanceDataException();
+    }
+
+    final raw = rawFile;
+    final summary = summaryFile;
+    if (raw == null || summary == null) {
+      throw StateError('Performance CSV files were not initialized.');
+    }
+
+    _diagnostic(
+      'export_sources session=$sessionId measurements=$_persistedMeasurementCount '
+      'raw_path=${raw.path} summary_path=${summary.path}',
+    );
+
+    final exportsDirectory = await Directory(
+      '${raw.parent.path}/exports',
+    ).create(recursive: true);
+    final exportedAt = DateTime.now().toUtc();
+    final timestamp = exportedAt.toIso8601String().replaceAll(
+      RegExp(r'[^0-9TZ]'),
+      '-',
+    );
+    late File zipFile;
+    do {
+      final filename =
+          'calabash_performance_${timestamp}_${sessionId}_${++_exportSequence}.zip';
+      zipFile = File('${exportsDirectory.path}/$filename');
+    } while (await zipFile.exists());
+
+    _diagnostic(
+      'export_target session=$sessionId zip_path=${zipFile.path} '
+      'source_measurements=$_persistedMeasurementCount',
+    );
+
+    final stagingDirectory = await Directory(
+      '${exportsDirectory.path}/.staging_${sessionId}_$_exportSequence',
+    ).create();
+    final metadata = jsonEncode({
+      'session_id': sessionId,
+      'recording_enabled': enabled,
+      'schema_version': 2,
+      'started_at_utc': startedAt.toIso8601String(),
+      'exported_at_utc': exportedAt.toIso8601String(),
+      'platform': Platform.operatingSystem,
+      'device_information': deviceInformation,
+      'source_revision': sourceRevision,
+      'build_number': buildNumber,
+      'model_sha256': modelSha256,
+      'measurement_count': PerformanceScanMethod.values.fold<int>(
+        0,
+        (count, method) => count + _persistedSummaries[method]!.totalCount,
+      ),
+      'measurement_counts_by_workflow': {
+        for (final method in PerformanceScanMethod.values)
+          method.label: _persistedSummaries[method]!.totalCount,
+      },
+      'raw_csv': raw.uri.pathSegments.last,
+      'summary_csv': summary.uri.pathSegments.last,
+    });
+
+    try {
+      final snapshots = await _snapshotFiles(raw, summary, stagingDirectory);
+      await compute(_createPerformanceZip, [
+        zipFile.path,
+        snapshots.$1.path,
+        raw.uri.pathSegments.last,
+        snapshots.$2.path,
+        summary.uri.pathSegments.last,
+        metadata,
+      ]);
+      _diagnostic(
+        'export_completed session=$sessionId zip_path=${zipFile.path} '
+        'raw_path=${raw.path} summary_path=${summary.path} '
+        'measurements=$_persistedMeasurementCount',
+      );
+      return zipFile;
+    } catch (error) {
+      _diagnostic(
+        'export_failed session=$sessionId error_type=${error.runtimeType} '
+        'zip_path=${zipFile.path}',
+      );
+      if (await zipFile.exists()) await zipFile.delete();
+      rethrow;
+    } finally {
+      if (await stagingDirectory.exists()) {
+        await stagingDirectory.delete(recursive: true);
+      }
+    }
+  }
+
+  Future<(File, File)> _snapshotFiles(
+    File raw,
+    File summary,
+    Directory stagingDirectory,
+  ) async {
+    final snapshot = _writeTail.then((_) async {
+      final rawCopy = await raw.copy(
+        '${stagingDirectory.path}/${raw.uri.pathSegments.last}',
+      );
+      final summaryCopy = await summary.copy(
+        '${stagingDirectory.path}/${summary.uri.pathSegments.last}',
+      );
+      return (rawCopy, summaryCopy);
+    });
+    // Keep the recorder's serialized write chain usable if snapshotting fails.
+    _writeTail = snapshot.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) => _reportError(error),
+    );
+    return snapshot;
+  }
 
   void _reportError(Object error) {
     final message = '$error';
     if (lastError != message) {
-      debugPrint('CALABASH_PERF storage error: $message');
+      _diagnostic('storage_error error_type=${error.runtimeType}');
+      lastError = message;
+      notifyListeners();
     }
-    lastError = message;
   }
 
   static String? _ms(int? micros) =>
@@ -541,4 +851,21 @@ class PerformanceProbe with WidgetsBindingObserver {
         final text = value is double ? value.toStringAsFixed(6) : value?.toString() ?? '';
         return text.contains(RegExp('[,"\r\n]')) ? '"${text.replaceAll('"', '""')}"' : text;
       }).join(',')}\r\n';
+}
+
+Future<String> _createPerformanceZip(List<String> arguments) async {
+  final encoder = ZipFileEncoder();
+  encoder.create(arguments[0]);
+  try {
+    await encoder.addFile(File(arguments[1]), arguments[2]);
+    await encoder.addFile(File(arguments[3]), arguments[4]);
+    encoder.addArchiveFile(
+      ArchiveFile.string('session_metadata.json', arguments[5]),
+    );
+    await encoder.close();
+    return arguments[0];
+  } catch (_) {
+    await encoder.close();
+    rethrow;
+  }
 }

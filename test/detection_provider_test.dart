@@ -21,6 +21,9 @@ class MeasuredTestModelService extends TestModelService {
           resizeLetterboxMicros: 1,
           tensorFillMicros: 0,
           inferenceMicros: 1,
+          invokeMicros: 1,
+          inputTensorMicros: 0,
+          outputTensorMicros: 0,
           candidateParsingMicros: 0,
           nmsMicros: 0,
           protoExtractionMicros: 0,
@@ -35,6 +38,14 @@ class MeasuredTestModelService extends TestModelService {
       decodeMicros: 1,
       modelInitializationMicros: 1,
     );
+  }
+}
+
+class FailingMeasuredTestModelService extends MeasuredTestModelService {
+  @override
+  Future<PhotoDetectionResult> detectFruitsWithMetrics(File imageFile) async {
+    calls++;
+    throw StateError('fixture inference failure');
   }
 }
 
@@ -104,6 +115,15 @@ void main() {
       expect(rows[1].split(',')[header.indexOf('scanning_method')], 'Gallery');
       expect(rows[1].split(',')[header.indexOf('decode_ms')], '0.001');
       expect(
+        rows[1].split(',')[header.indexOf('interpreter_invoke_ms')],
+        '0.001',
+      );
+      expect(
+        rows[1].split(',')[header.indexOf('model_preprocess_ms')],
+        '0.001',
+      );
+      expect(rows[1].split(',')[header.indexOf('frame_transfer_ms')], isEmpty);
+      expect(
         rows[1].split(',')[header.indexOf('model_initialization_ms')],
         '0.001',
       );
@@ -134,6 +154,49 @@ void main() {
       expect(await provider.scanFromSource(ImageSource.gallery), isFalse);
       expect(probe.summaryFor(PerformanceScanMethod.gallery).totalCount, 0);
       expect(probe.summaryFor(PerformanceScanMethod.capture).totalCount, 1);
+      await probe.flush();
+      final rows = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+      expect(rows, hasLength(2));
+      final header = rows.first.split(',');
+      final capture = Map.fromIterables(header, rows.last.split(','));
+      expect(capture['session_id'], probe.sessionId);
+      expect(capture['scanning_method'], 'Capture');
+      expect(capture['outcome'], 'success');
+    },
+  );
+
+  test(
+    'failed photo processing is recorded once with its failure outcome',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'calabash-failed-photo-test-',
+      );
+      final probe = PerformanceProbe(
+        enabled: true,
+        documentsDirectory: () async => directory,
+      );
+      final provider = DetectionProvider(
+        modelService: FailingMeasuredTestModelService(),
+        imageService: TestImageService(() async => File('failed.jpg')),
+        performanceProbe: probe,
+      );
+      addTearDown(() async {
+        provider.dispose();
+        await probe.close();
+        await directory.delete(recursive: true);
+      });
+
+      expect(await provider.scanFromSource(ImageSource.gallery), isFalse);
+      expect(probe.summaryFor(PerformanceScanMethod.gallery).totalCount, 1);
+      await probe.flush();
+      final rows = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+      expect(rows, hasLength(2));
+      final header = rows.first.split(',');
+      final values = rows.last.split(',');
+      expect(values[header.indexOf('scanning_method')], 'Gallery');
+      expect(values[header.indexOf('outcome')], 'error');
+      expect(values[header.indexOf('complete_processing_ms')], isNotEmpty);
+      expect(values[header.indexOf('yolo_inference_ms')], isEmpty);
     },
   );
 
@@ -145,6 +208,7 @@ void main() {
       final provider = DetectionProvider(
         modelService: model,
         imageService: picker,
+        performanceProbe: PerformanceProbe(enabled: false),
       );
       addTearDown(provider.dispose);
       final original = File('original.jpg');
@@ -188,6 +252,7 @@ void main() {
       final provider = DetectionProvider(
         modelService: model,
         imageService: TestImageService(() async => null),
+        performanceProbe: PerformanceProbe(enabled: false),
       );
       addTearDown(provider.dispose);
       var notifications = 0;
