@@ -14,6 +14,7 @@ import 'package:calabash_maturity_detection/widgets/detection_box.dart';
 import 'package:calabash_maturity_detection/widgets/information_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
 class LiveCameraScreen extends StatelessWidget {
@@ -27,9 +28,76 @@ class LiveCameraScreen extends StatelessWidget {
     return ChangeNotifierProvider(
       create: (_) =>
           (providerFactory?.call() ?? LiveCameraProvider())..initialize(),
-      child: const _LiveCameraView(),
+      child: const _LiveCameraRouteGuard(child: _LiveCameraView()),
     );
   }
+}
+
+/// Returns to Home after permission denial and reports the next step there.
+class _LiveCameraRouteGuard extends StatefulWidget {
+  const _LiveCameraRouteGuard({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_LiveCameraRouteGuard> createState() => _LiveCameraRouteGuardState();
+}
+
+class _LiveCameraRouteGuardState extends State<_LiveCameraRouteGuard> {
+  LiveCameraProvider? _provider;
+  bool _handledPermissionDenial = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final provider = context.read<LiveCameraProvider>();
+    if (_provider == provider) return;
+    _provider?.removeListener(_handlePermissionStatus);
+    _provider = provider..addListener(_handlePermissionStatus);
+    _handlePermissionStatus();
+  }
+
+  @override
+  void dispose() {
+    _provider?.removeListener(_handlePermissionStatus);
+    super.dispose();
+  }
+
+  void _handlePermissionStatus() {
+    if (!mounted || _handledPermissionDenial) return;
+
+    final status = _provider!.status;
+    final permanentlyDenied =
+        status == LiveCameraStatus.permissionPermanentlyDenied;
+    if (!permanentlyDenied && status != LiveCameraStatus.permissionDenied) {
+      return;
+    }
+
+    final navigator = Navigator.of(context);
+    if (!navigator.canPop()) return;
+
+    _handledPermissionDenial = true;
+    final messenger = ScaffoldMessenger.of(context);
+    navigator.popUntil((route) => route.isFirst);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          permanentlyDenied
+              ? 'Camera access is disabled. Enable it in Settings to use Live Camera.'
+              : 'Camera permission was denied. Live Camera was closed.',
+        ),
+        action: permanentlyDenied
+            ? SnackBarAction(
+                label: 'SETTINGS',
+                onPressed: () => openAppSettings(),
+              )
+            : null,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 class _LiveCameraView extends StatelessWidget {

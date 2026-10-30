@@ -281,7 +281,7 @@ class _ScanActions extends StatelessWidget {
                   context,
                 ).push(fadeRoute(const LiveCameraScreen())),
           icon: const Icon(Icons.center_focus_strong_rounded),
-          label: const Text('Scan Calabash'),
+          label: const Text('LIVE CAMERA'),
           style: FilledButton.styleFrom(
             minimumSize: const Size.fromHeight(56),
             backgroundColor: AppConstants.primaryGreen,
