@@ -293,8 +293,29 @@ void main() {
       final summary = utf8.decode(
         firstArchive.findFile(summaryName)!.content as List<int>,
       );
-      expect(summary.trim().split('\r\n'), hasLength(4));
-      expect(summary.trim().split('\r\n').first.split(','), hasLength(30));
+      final summaryRows = summary.trim().split('\r\n');
+      final summaryHeader = summaryRows.first.split(',');
+      expect(summaryRows, hasLength(4));
+      expect(summaryHeader, hasLength(33));
+      const percentileColumns = [
+        'sampled_yolo_inference_p50_ms',
+        'sampled_yolo_inference_p90_ms',
+        'sampled_yolo_inference_p95_ms',
+      ];
+      expect(summaryHeader, containsAll(percentileColumns));
+      final byMethod = <String, Map<String, String>>{};
+      for (final line in summaryRows.skip(1)) {
+        final cells = line.split(',');
+        expect(cells, hasLength(summaryHeader.length));
+        final row = Map<String, String>.fromIterables(summaryHeader, cells);
+        byMethod[row['scanning_method']!] = row;
+      }
+      for (final column in percentileColumns) {
+        // One synthetic 2000 ms sample; the failed capture must not become zero.
+        expect(double.parse(byMethod['Live']![column]!), 2000);
+        expect(byMethod['Capture']![column], isEmpty);
+        expect(byMethod['Gallery']![column], isEmpty);
+      }
 
       final secondExport = await probe.exportZip();
       expect(secondExport.path, isNot(firstExport.path));
