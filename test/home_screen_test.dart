@@ -17,6 +17,8 @@ PerformanceMeasurement _measurement(PerformanceScanMethod method) =>
       completeMicros: 1000,
       processingMicros: 1000,
       inferenceMicros: 500,
+      preprocessMicros: 100,
+      postprocessMicros: 100,
     );
 
 class _EmptyExportProbe extends PerformanceProbe {
@@ -82,12 +84,14 @@ void main() {
     expect(find.text('Live Detection: 0'), findsOneWidget);
     expect(find.text('Capture: 0'), findsOneWidget);
     expect(find.text('Gallery: 0'), findsOneWidget);
+    expect(find.text('Valid Gallery inference: 0 / 30'), findsOneWidget);
 
     probe.record(_measurement(PerformanceScanMethod.gallery));
     await tester.pump();
 
     expect(find.text('Measurements this session: 1'), findsOneWidget);
     expect(find.text('Gallery: 1'), findsOneWidget);
+    expect(find.text('Valid Gallery inference: 1 / 30'), findsOneWidget);
     expect(find.text('Live Detection: 0'), findsOneWidget);
     expect(find.text('Capture: 0'), findsOneWidget);
     await tester.runAsync(probe.close);

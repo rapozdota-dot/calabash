@@ -1,119 +1,121 @@
-name: Android APK Build
+name: Android Model Performance Comparison
 
 on:
-  push:
-    branches:
-      - main
-      - master
   workflow_dispatch:
     inputs:
-      publish_release:
-        description: Publish a GitHub Release for this APK
+      standalone_model_ref:
+        description: Git ref containing the standalone V7 model
         required: true
-        default: "true"
-        type: choice
-        options:
-          - "false"
-          - "true"
-      release_name:
-        description: Optional descriptive release title (version and build are added automatically)
-        required: false
-        type: string
+        default: '770a88ef98edb8b97bc6cf3bd37b64da810017e9'
+      hybrid_model_ref:
+        description: Git ref containing the hybrid V7 model
+        required: true
+        default: '337db943a7210cbbaf8dafbe460f79470f9ecf9a'
 
 permissions:
   contents: read
 
-concurrency:
-  group: android-apk-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  build-apk:
-    name: Build release APK
+  build:
+    name: Performance APK - ${{ matrix.variant }}
     runs-on: ubuntu-latest
-
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [yoloperf, hybridperf]
+    env:
+      ORG_GRADLE_PROJECT_calabashPerfVariant: ${{ matrix.variant }}
+      STANDALONE_REF: ${{ inputs.standalone_model_ref }}
+      HYBRID_REF: ${{ inputs.hybrid_model_ref }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.38.7"
+          flutter-version: '3.38.7'
           channel: stable
           cache: true
-
+      - name: Select pinned model and identify build
+        shell: bash
+        run: |
+          if [ '${{ matrix.variant }}' = yoloperf ]; then
+            model_ref="$STANDALONE_REF"
+            label='Standalone YOLOv8n-seg V7 FP32'
+          else
+            model_ref="$HYBRID_REF"
+            label='MobileNetV3-small + YOLOv8-seg V7 FP32'
+          fi
+          model_revision=$(git rev-parse "${model_ref}^{commit}")
+          git show "${model_revision}:assets/model/model.tflite" > assets/model/model.tflite
+          echo "MODEL_LABEL=$label" >> "$GITHUB_ENV"
+          echo "MODEL_REVISION=$model_revision" >> "$GITHUB_ENV"
+          echo "MODEL_SHA=$(sha256sum assets/model/model.tflite | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "PERF_BUILD=$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
       - name: Install dependencies
         run: flutter pub get
-
-      - name: Analyze project
+      - name: Static analysis
         run: flutter analyze
-
-      - name: Run tests
+      - name: Recording workflow safety checks
+        run: python3 -m unittest tool/test_android_comparison_workflow.py
+      - name: Unit and widget tests
         run: flutter test
-
-      - name: Build release APK
-        run: flutter build apk --release --build-number=${{ github.run_number }}
-
-      - name: Prepare APK asset
+      - name: Verify enabled recording configuration
+        run: flutter test --dart-define=CALABASH_PERF=true test/performance_probe_test.dart
+      - name: Build recording-enabled release
+        run: >-
+          flutter build apk --release --build-number="$PERF_BUILD"
+          --dart-define=CALABASH_PERF=true
+          --dart-define="CALABASH_MODEL_VARIANT=$MODEL_LABEL"
+          --dart-define="CALABASH_MODEL_SHA256=$MODEL_SHA"
+          --dart-define="CALABASH_SOURCE_REVISION=$GITHUB_SHA"
+          --dart-define="CALABASH_BUILD_NUMBER=$PERF_BUILD"
+      - name: Verify APK identity and archive evidence
+        shell: bash
         run: |
-          safe_ref="${GITHUB_REF_NAME//\//-}"
-          apk_name="calabash-maturity-detection-${safe_ref}-${GITHUB_RUN_NUMBER}.apk"
           mkdir -p release
-          test -f build/app/outputs/flutter-apk/app-release.apk
-          cp build/app/outputs/flutter-apk/app-release.apk "release/${apk_name}"
-          echo "APK_NAME=${apk_name}" >> "${GITHUB_ENV}"
-          ls -lh release
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+          apk="release/calabash-${{ matrix.variant }}-recording-${PERF_BUILD}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk "$apk"
+          aapt=$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -1)
+          "$aapt" dump badging "$apk" > release/${{ matrix.variant }}-apk-identity.txt
+          grep -F "com.example.calabash_maturity_detection.${{ matrix.variant }}" release/${{ matrix.variant }}-apk-identity.txt
+          unzip -p "$apk" assets/flutter_assets/assets/model/model.tflite | sha256sum | grep "$MODEL_SHA"
+          printf 'model_variant=%s\nmodel_sha256=%s\nmodel_source_revision=%s\napp_source_revision=%s\nbuild_number=%s\nrecording_enabled=true\n' \
+            "$MODEL_LABEL" "$MODEL_SHA" "$MODEL_REVISION" "$GITHUB_SHA" "$PERF_BUILD" > release/${{ matrix.variant }}-build-info.txt
+          cp docs/performance_comparison_testing.md release/TESTING_GUIDE.md
+      - uses: actions/upload-artifact@v4
         with:
-          name: calabash-maturity-detection-apk-${{ github.run_number }}
-          path: release/*.apk
+          name: performance-${{ matrix.variant }}-${{ github.run_number }}
+          path: release/*
           if-no-files-found: error
-          retention-days: 30
-
-  publish-release:
-    name: Publish GitHub Release
-    needs: build-apk
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true') }}
+  release:
+    name: Publish both comparison APKs
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Name release
-        env:
-          CUSTOM_TITLE: ${{ inputs.release_name }}
-        run: |
-          version=$(sed -n 's/^version: *\([^+ ]*\).*/\1/p' pubspec.yaml)
-          title="${CUSTOM_TITLE:-$(git log -1 --format=%s)}"
-          echo "RELEASE_NAME=Calabash v${version} - Build ${GITHUB_RUN_NUMBER} - ${title}" >> "$GITHUB_ENV"
-
-      - name: Download APK artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: calabash-maturity-detection-apk-${{ github.run_number }}
+          pattern: performance-*-${{ github.run_number }}
+          merge-multiple: true
           path: release
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
-          tag_name: apk-${{ github.run_number }}
-          name: ${{ env.RELEASE_NAME }}
+          tag_name: performance-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: Calabash V7 Performance Comparison - YOLO and Hybrid - P${{ github.run_number }}
+          prerelease: true
+          make_latest: false
           body: |
-            Automated Android APK build for Calabash Maturity Detection.
-
-            Commit: ${{ github.sha }}
-            Includes the bundled offline model and live detection.
-          files: release/*.apk
-          make_latest: true
+            Two Android-only release-mode testing apps with performance recording enabled.
+            Install both: Calabash YOLO Perf and Calabash Hybrid Perf. They have separate application IDs and storage.
+            Both APKs use the same app code and timing boundaries; only their model and identifying labels differ.
+            On Home, confirm recording is enabled. Run scans, then Export Performance Data.
+            Each ZIP contains performance_report.xlsx (Summary / Raw Measurements / Session), raw CSV, summary CSV and metadata.
+            No results are prefilled. Use the same phone, images, and scanning conditions. See TESTING_GUIDE.md.
+          files: release/*

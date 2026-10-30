@@ -25,6 +25,7 @@ void main() {
   if (PerformanceProbe.buildEnabled) {
     WidgetsFlutterBinding.ensureInitialized();
     probe.attachLifecycle();
+    unawaited(probe.loadDeviceDetails());
   }
   runApp(const CalabashApp());
 }

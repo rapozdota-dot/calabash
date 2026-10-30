@@ -7,7 +7,9 @@ import 'package:archive/archive.dart';
 import 'package:archive/archive_io.dart' show ZipFileEncoder;
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/widgets.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:calabash_maturity_detection/services/performance_workbook.dart';
 
 enum PerformanceScanMethod {
   live('Live'),
@@ -334,6 +336,29 @@ class PerformanceProbe extends ChangeNotifier with WidgetsBindingObserver {
   );
   static const buildNumber = String.fromEnvironment('CALABASH_BUILD_NUMBER');
   static const modelSha256 = String.fromEnvironment('CALABASH_MODEL_SHA256');
+  static const modelVariant = String.fromEnvironment(
+    'CALABASH_MODEL_VARIANT',
+    defaultValue: 'Unspecified model',
+  );
+  Map<String, Object?> _deviceDetails = {};
+
+  /// Device facts and a single PSS snapshot, never presented as average memory.
+  /// Missing native support must not prevent inference, recording, or export.
+  Future<void> loadDeviceDetails() async {
+    if (!enabled || !Platform.isAndroid) return;
+    try {
+      final details = await const MethodChannel(
+        'calabash/performance',
+      ).invokeMapMethod<String, Object?>('deviceDetails');
+      _deviceDetails = {
+        ...?details,
+        'sampled_at_utc': DateTime.now().toUtc().toIso8601String(),
+      };
+    } catch (_) {
+      _deviceDetails = {'status': 'Not measured: native details unavailable'};
+    }
+  }
+
   static const rawHeader = [
     'session_id',
     'measurement_id',
@@ -710,6 +735,7 @@ class PerformanceProbe extends ChangeNotifier with WidgetsBindingObserver {
       'export_started session=$sessionId enabled=$enabled '
       'measurements=$totalMeasurementCount pending=${_pending.length}',
     );
+    await loadDeviceDetails();
     await flush(reason: 'export');
     if (lastError != null) {
       _diagnostic(
@@ -746,9 +772,11 @@ class PerformanceProbe extends ChangeNotifier with WidgetsBindingObserver {
       '-',
     );
     late File zipFile;
+    late int exportSequence;
     do {
+      exportSequence = ++_exportSequence;
       final filename =
-          'calabash_performance_${timestamp}_${sessionId}_${++_exportSequence}.zip';
+          'calabash_performance_${timestamp}_${sessionId}_$exportSequence.zip';
       zipFile = File('${exportsDirectory.path}/$filename');
     } while (await zipFile.exists());
 
@@ -758,40 +786,22 @@ class PerformanceProbe extends ChangeNotifier with WidgetsBindingObserver {
     );
 
     final stagingDirectory = await Directory(
-      '${exportsDirectory.path}/.staging_${sessionId}_$_exportSequence',
+      '${exportsDirectory.path}/.staging_${sessionId}_$exportSequence',
     ).create();
-    final metadata = jsonEncode({
-      'session_id': sessionId,
-      'recording_enabled': enabled,
-      'schema_version': 2,
-      'started_at_utc': startedAt.toIso8601String(),
-      'exported_at_utc': exportedAt.toIso8601String(),
-      'platform': Platform.operatingSystem,
-      'device_information': deviceInformation,
-      'source_revision': sourceRevision,
-      'build_number': buildNumber,
-      'model_sha256': modelSha256,
-      'measurement_count': PerformanceScanMethod.values.fold<int>(
-        0,
-        (count, method) => count + _persistedSummaries[method]!.totalCount,
-      ),
-      'measurement_counts_by_workflow': {
-        for (final method in PerformanceScanMethod.values)
-          method.label: _persistedSummaries[method]!.totalCount,
-      },
-      'raw_csv': raw.uri.pathSegments.last,
-      'summary_csv': summary.uri.pathSegments.last,
-    });
-
     try {
-      final snapshots = await _snapshotFiles(raw, summary, stagingDirectory);
+      final snapshots = await _snapshotFiles(
+        raw,
+        summary,
+        stagingDirectory,
+        exportedAt,
+      );
       await compute(_createPerformanceZip, [
         zipFile.path,
         snapshots.$1.path,
         raw.uri.pathSegments.last,
         snapshots.$2.path,
         summary.uri.pathSegments.last,
-        metadata,
+        snapshots.$3,
       ]);
       _diagnostic(
         'export_completed session=$sessionId zip_path=${zipFile.path} '
@@ -813,10 +823,39 @@ class PerformanceProbe extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<(File, File)> _snapshotFiles(
+  String _metadata(DateTime exportedAt, File raw, File summary) => jsonEncode({
+    'session_id': sessionId,
+    'recording_enabled': enabled,
+    'schema_version': 2,
+    'started_at_utc': startedAt.toIso8601String(),
+    'exported_at_utc': exportedAt.toIso8601String(),
+    'platform': Platform.operatingSystem,
+    'device_information': deviceInformation,
+    'source_revision': sourceRevision,
+    'build_number': buildNumber,
+    'model_sha256': modelSha256,
+    'model_variant': modelVariant,
+    'device_details': _deviceDetails,
+    'average_application_memory_mb': null,
+    'average_application_memory_status': 'Not measured',
+    'measurement_count': PerformanceScanMethod.values.fold<int>(
+      0,
+      (count, method) => count + _persistedSummaries[method]!.totalCount,
+    ),
+    'measurement_counts_by_workflow': {
+      for (final method in PerformanceScanMethod.values)
+        method.label: _persistedSummaries[method]!.totalCount,
+    },
+    'raw_csv': raw.uri.pathSegments.last,
+    'summary_csv': summary.uri.pathSegments.last,
+    'excel_workbook': 'performance_report.xlsx',
+  });
+
+  Future<(File, File, String)> _snapshotFiles(
     File raw,
     File summary,
     Directory stagingDirectory,
+    DateTime exportedAt,
   ) async {
     final snapshot = _writeTail.then((_) async {
       final rawCopy = await raw.copy(
@@ -825,7 +864,8 @@ class PerformanceProbe extends ChangeNotifier with WidgetsBindingObserver {
       final summaryCopy = await summary.copy(
         '${stagingDirectory.path}/${summary.uri.pathSegments.last}',
       );
-      return (rawCopy, summaryCopy);
+      // Capture counts in the same serialized slot as both source snapshots.
+      return (rawCopy, summaryCopy, _metadata(exportedAt, raw, summary));
     });
     // Keep the recorder's serialized write chain usable if snapshotting fails.
     _writeTail = snapshot.then<void>(
@@ -854,6 +894,11 @@ class PerformanceProbe extends ChangeNotifier with WidgetsBindingObserver {
 }
 
 Future<String> _createPerformanceZip(List<String> arguments) async {
+  final workbook = PerformanceWorkbook.create(
+    await File(arguments[1]).readAsString(),
+    await File(arguments[3]).readAsString(),
+    arguments[5],
+  );
   final encoder = ZipFileEncoder();
   encoder.create(arguments[0]);
   try {
@@ -861,6 +906,19 @@ Future<String> _createPerformanceZip(List<String> arguments) async {
     await encoder.addFile(File(arguments[3]), arguments[4]);
     encoder.addArchiveFile(
       ArchiveFile.string('session_metadata.json', arguments[5]),
+    );
+    encoder.addArchiveFile(
+      ArchiveFile('performance_report.xlsx', workbook.length, workbook),
+    );
+    encoder.addArchiveFile(
+      ArchiveFile.string(
+        'READ_ME.txt',
+        'Open performance_report.xlsx in Excel or LibreOffice. Summary, Raw Measurements and Session sheets contain recorded data only. '
+            'Keep the original CSVs and session_metadata.json as evidence. Missing values are blank, never invented. '
+            'Memory is an export-time snapshot only; average application memory is not measured. '
+            'Export each app before closing it; a restart begins a new session. Collect the same images and workflows on the same phone for both variants. '
+            'Do not report these model scores as accuracy or compare different devices/recording conditions without noting the difference.',
+      ),
     );
     await encoder.close();
     return arguments[0];

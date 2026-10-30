@@ -155,6 +155,21 @@ class _PerformanceRecordingStatus extends StatelessWidget {
               ),
               if (enabled) ...[
                 const SizedBox(height: 8),
+                const Text('Model: ${PerformanceProbe.modelVariant}'),
+                const Text(
+                  'Export includes Excel workbook, raw CSVs and session metadata.',
+                ),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 4,
+                  children: [
+                    for (final method in PerformanceScanMethod.values)
+                      Text(
+                        'Valid ${method.label} inference: ${probe.summaryFor(method).inferenceValidCount} / 30',
+                      ),
+                  ],
+                ),
                 Text(
                   'Measurements this session: ${probe.totalMeasurementCount}',
                 ),
@@ -218,7 +233,7 @@ class _ExportPerformanceButtonState extends State<_ExportPerformanceButton> {
         ShareParams(
           files: [XFile(zip.path, mimeType: 'application/zip')],
           subject: 'Calabash performance data',
-          text: 'Performance CSV export: ${zip.uri.pathSegments.last}',
+          text: 'Performance Excel + CSV export: ${zip.uri.pathSegments.last}',
         ),
       );
       if (!mounted) return;

@@ -265,7 +265,13 @@ void main() {
       final summaryName = probe.summaryFile!.uri.pathSegments.last;
       expect(
         firstArchive.files.map((file) => file.name),
-        containsAll([rawName, summaryName, 'session_metadata.json']),
+        containsAll([
+          rawName,
+          summaryName,
+          'session_metadata.json',
+          'performance_report.xlsx',
+          'READ_ME.txt',
+        ]),
       );
       final raw = utf8.decode(
         firstArchive.findFile(rawName)!.content as List<int>,
@@ -290,6 +296,14 @@ void main() {
       expect(metadata['measurement_count'], 2);
       expect(metadata['raw_csv'], rawName);
       expect(metadata['summary_csv'], summaryName);
+      expect(metadata['excel_workbook'], 'performance_report.xlsx');
+      expect(metadata['recording_enabled'], isTrue);
+      expect(metadata['model_variant'], PerformanceProbe.modelVariant);
+      expect(metadata['average_application_memory_mb'], isNull);
+      final workbook = ZipDecoder().decodeBytes(
+        firstArchive.findFile('performance_report.xlsx')!.content as List<int>,
+      );
+      expect(workbook.findFile('xl/workbook.xml'), isNotNull);
       final summary = utf8.decode(
         firstArchive.findFile(summaryName)!.content as List<int>,
       );

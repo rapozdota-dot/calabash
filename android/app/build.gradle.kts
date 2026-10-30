@@ -22,6 +22,16 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.calabash_maturity_detection"
+        val perfVariant = project.findProperty("calabashPerfVariant")?.toString()
+        require(perfVariant == null || perfVariant in listOf("yoloperf", "hybridperf")) {
+            "Unknown performance variant"
+        }
+        manifestPlaceholders["calabashAppLabel"] = when (perfVariant) {
+            "yoloperf" -> "Calabash YOLO Perf"
+            "hybridperf" -> "Calabash Hybrid Perf"
+            else -> "Calabash Maturity Detection"
+        }
+        if (perfVariant != null) applicationIdSuffix = ".$perfVariant"
         if (project.findProperty("calabashLiveCheck") == "true") {
             applicationIdSuffix = ".livecheck"
         }
