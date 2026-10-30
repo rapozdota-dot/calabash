@@ -13,9 +13,18 @@ import 'package:provider/provider.dart';
 
 /// Starts Flutter and mounts the app; model initialization begins in its provider.
 void main() {
+  final probe = PerformanceProbe.instance;
+  // TEMPORARY: remove after validating the installed iOS diagnostic build.
+  debugPrint(
+    '[CALABASH_PERF_DIAG] runtime_state '
+    'build_enabled=${PerformanceProbe.buildEnabled} '
+    'recorder_enabled=${probe.enabled} session=${probe.sessionId} '
+    'source_revision=${PerformanceProbe.sourceRevision} '
+    'build_number=${PerformanceProbe.buildNumber}',
+  );
   if (PerformanceProbe.buildEnabled) {
     WidgetsFlutterBinding.ensureInitialized();
-    PerformanceProbe.instance.attachLifecycle();
+    probe.attachLifecycle();
   }
   runApp(const CalabashApp());
 }

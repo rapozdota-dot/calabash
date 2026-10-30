@@ -12,11 +12,16 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.performanceProbe});
+
+  final PerformanceProbe? performanceProbe;
 
   /// Shows the branded Home page with distinct live-scan and gallery actions.
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) =>
+      _buildHome(context, performanceProbe ?? PerformanceProbe.instance);
+
+  Widget _buildHome(BuildContext context, PerformanceProbe probe) => Scaffold(
     appBar: AppBar(
       title: const Text('Calabash'),
       actions: [
@@ -94,7 +99,9 @@ class HomeScreen extends StatelessWidget {
                   const SizedBox(height: 28),
                   const _ScanActions(),
                   const SizedBox(height: 16),
-                  const _ExportPerformanceButton(),
+                  _PerformanceRecordingStatus(probe: probe),
+                  const SizedBox(height: 12),
+                  _ExportPerformanceButton(probe: probe),
                   const SizedBox(height: 28),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -124,8 +131,74 @@ class HomeScreen extends StatelessWidget {
   );
 }
 
+class _PerformanceRecordingStatus extends StatelessWidget {
+  const _PerformanceRecordingStatus({required this.probe});
+
+  final PerformanceProbe probe;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: probe,
+    builder: (context, _) {
+      final enabled = probe.enabled;
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                enabled
+                    ? 'Performance recording is enabled'
+                    : 'Performance recording is disabled',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              if (enabled) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Measurements this session: ${probe.totalMeasurementCount}',
+                ),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 4,
+                  children: [
+                    Text(
+                      'Live Detection: ${probe.measurementCountFor(PerformanceScanMethod.live)}',
+                    ),
+                    Text(
+                      'Capture: ${probe.measurementCountFor(PerformanceScanMethod.capture)}',
+                    ),
+                    Text(
+                      'Gallery: ${probe.measurementCountFor(PerformanceScanMethod.gallery)}',
+                    ),
+                  ],
+                ),
+              ] else ...[
+                const SizedBox(height: 4),
+                const Text(
+                  'This build does not have performance recording enabled.',
+                ),
+              ],
+              if (probe.lastError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Performance data could not be saved. Check device storage and try exporting again.',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
 class _ExportPerformanceButton extends StatefulWidget {
-  const _ExportPerformanceButton();
+  const _ExportPerformanceButton({required this.probe});
+
+  final PerformanceProbe probe;
 
   @override
   State<_ExportPerformanceButton> createState() =>
@@ -139,7 +212,7 @@ class _ExportPerformanceButtonState extends State<_ExportPerformanceButton> {
     if (_isExporting) return;
     setState(() => _isExporting = true);
     try {
-      final zip = await PerformanceProbe.instance.exportZip();
+      final zip = await widget.probe.exportZip();
       if (!mounted) return;
       final result = await SharePlus.instance.share(
         ShareParams(
@@ -161,9 +234,17 @@ class _ExportPerformanceButtonState extends State<_ExportPerformanceButton> {
       ).showSnackBar(SnackBar(content: Text(message)));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Performance export failed: $error')),
-      );
+      final message = switch (error) {
+        NoPerformanceDataException() => NoPerformanceDataException.message,
+        StateError()
+            when error.message ==
+                'Performance recording is not enabled in this build.' =>
+          'This build does not have performance recording enabled.',
+        _ => 'Performance export failed. Check device storage and try again.',
+      };
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     } finally {
       if (mounted) setState(() => _isExporting = false);
     }

@@ -43,6 +43,8 @@ Future<void> waitForAutomaticWrite(PerformanceProbe probe) async {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late Directory directory;
   late PerformanceProbe probe;
   setUp(() async {
@@ -66,6 +68,23 @@ void main() {
       const bool.fromEnvironment('CALABASH_PERF'),
     );
     expect(PerformanceProbe.instance.enabled, PerformanceProbe.buildEnabled);
+  });
+
+  test('startup lifecycle flush creates this session CSV files', () async {
+    expect(probe.rawFile, isNull);
+    probe.attachLifecycle();
+    // A second flush is serialized after the unawaited startup flush.
+    await probe.flush();
+
+    expect(probe.lastError, isNull);
+    expect(await probe.rawFile!.exists(), isTrue);
+    expect(await probe.summaryFile!.exists(), isTrue);
+    final raw = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+    final summary = (await probe.summaryFile!.readAsString()).trim().split(
+      '\r\n',
+    );
+    expect(raw, hasLength(1));
+    expect(summary, hasLength(4));
   });
 
   test(
@@ -294,28 +313,37 @@ void main() {
     },
   );
 
-  test(
-    'an empty session exports valid empty CSVs and a zero-count summary',
-    () async {
-      final exported = await probe.exportZip();
-      final archive = ZipDecoder().decodeBytes(await exported.readAsBytes());
-      expect(archive.files, hasLength(3));
-      final raw = utf8.decode(
-        archive.findFile(probe.rawFile!.uri.pathSegments.last)!.content
-            as List<int>,
-      );
-      expect(raw.trim().split('\r\n'), hasLength(1));
-      final summary = utf8.decode(
-        archive.findFile(probe.summaryFile!.uri.pathSegments.last)!.content
-            as List<int>,
-      );
-      expect(summary.trim().split('\r\n'), hasLength(4));
-      for (final row in summary.trim().split('\r\n').skip(1)) {
-        expect(row.split(',').first, 'fixture-one');
-        expect(row.split(',')[2], '0');
-      }
-    },
-  );
+  test('an empty session cannot export a ZIP', () async {
+    await expectLater(
+      probe.exportZip(),
+      throwsA(isA<NoPerformanceDataException>()),
+    );
+    expect(await probe.rawFile!.exists(), isTrue);
+    expect(await probe.summaryFile!.exists(), isTrue);
+    expect(
+      await Directory('${probe.rawFile!.parent.path}/exports').exists(),
+      isFalse,
+    );
+  });
+
+  test('session measurement counts are separated by workflow', () {
+    expect(probe.totalMeasurementCount, 0);
+    for (final method in PerformanceScanMethod.values) {
+      expect(probe.measurementCountFor(method), 0);
+    }
+
+    probe.record(fixture(method: PerformanceScanMethod.live));
+    probe.record(fixture(method: PerformanceScanMethod.capture));
+    probe.record(fixture(method: PerformanceScanMethod.gallery));
+    probe.record(
+      fixture(method: PerformanceScanMethod.gallery, outcome: 'error'),
+    );
+
+    expect(probe.totalMeasurementCount, 4);
+    expect(probe.measurementCountFor(PerformanceScanMethod.live), 1);
+    expect(probe.measurementCountFor(PerformanceScanMethod.capture), 1);
+    expect(probe.measurementCountFor(PerformanceScanMethod.gallery), 2);
+  });
 
   test(
     'export reports a recorder flush failure instead of returning a ZIP',
@@ -334,6 +362,7 @@ void main() {
   );
 
   test('export reports ZIP destination errors', () async {
+    probe.record(fixture());
     await probe.flush();
     final exportDestination = File(
       '${directory.path}/calabash_performance/exports',

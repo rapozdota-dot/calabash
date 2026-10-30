@@ -180,6 +180,14 @@ Home screen adds an export action. With the flag disabled, no performance files 
 acquisition/queue timers are created. This measures **YOLOv8n-seg only**;
 MobileNetV3 is not an implemented stage.
 
+Home shows the enabled/disabled recording state and this launch's total and
+Live/Capture/Gallery measurement counts. If the recorder has not saved any
+measurement rows, export stops before creating a ZIP and reports: “No
+performance data recorded yet. Run Live Detection, Capture, or Gallery
+detection, then export again.” CSV headers and summary rows do not count as
+measurements. Storage failures are shown with a user-facing error; source CSVs
+remain intact after successful or repeated exports.
+
 ### Measurement boundaries
 
 All new elapsed durations use `Stopwatch`; UTC wall-clock timestamps only label
@@ -344,6 +352,12 @@ flutter build ios --release --no-codesign --build-number=<build-number> \
   --dart-define=CALABASH_BUILD_NUMBER=<build-number> \
   --dart-define="CALABASH_PERF_DEVICE=iPhone 12, 4 GB RAM" \
   --dart-define=CALABASH_MODEL_SHA256=<actual-model-sha256>
+```
+
+For a physical Android debug run, explicitly enable recording:
+
+```bash
+flutter run --debug --dart-define=CALABASH_PERF=true
 ```
 
 Windows development uses the GitHub macOS workflow instead of a local iOS build.

@@ -154,6 +154,14 @@ void main() {
       expect(await provider.scanFromSource(ImageSource.gallery), isFalse);
       expect(probe.summaryFor(PerformanceScanMethod.gallery).totalCount, 0);
       expect(probe.summaryFor(PerformanceScanMethod.capture).totalCount, 1);
+      await probe.flush();
+      final rows = (await probe.rawFile!.readAsString()).trim().split('\r\n');
+      expect(rows, hasLength(2));
+      final header = rows.first.split(',');
+      final capture = Map.fromIterables(header, rows.last.split(','));
+      expect(capture['session_id'], probe.sessionId);
+      expect(capture['scanning_method'], 'Capture');
+      expect(capture['outcome'], 'success');
     },
   );
 
@@ -200,6 +208,7 @@ void main() {
       final provider = DetectionProvider(
         modelService: model,
         imageService: picker,
+        performanceProbe: PerformanceProbe(enabled: false),
       );
       addTearDown(provider.dispose);
       final original = File('original.jpg');
@@ -243,6 +252,7 @@ void main() {
       final provider = DetectionProvider(
         modelService: model,
         imageService: TestImageService(() async => null),
+        performanceProbe: PerformanceProbe(enabled: false),
       );
       addTearDown(provider.dispose);
       var notifications = 0;
