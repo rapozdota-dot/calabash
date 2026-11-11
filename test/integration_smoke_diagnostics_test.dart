@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:isolate';
 
 import 'package:calabash_maturity_detection/integration_test/smoke_stage_runner.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+void _failNativeInference() => throw StateError('native invocation failed');
 
 void main() {
   group('SmokeStageRunner', () {
@@ -121,6 +124,79 @@ void main() {
         operation: () async {},
       ),
       completes,
+    );
+  });
+
+  test('runtime reports success after cleanup completes', () async {
+    final messages = <String>[];
+    final runner = SmokeStageRunner(log: messages.add);
+    var released = false;
+    await runner.runWithCleanup<void>(
+      'Standalone model runtime',
+      timeout: const Duration(seconds: 5),
+      operation: (cleanup) async {
+        cleanup.add('fake interpreter', () => released = true);
+      },
+    );
+
+    expect(released, isTrue);
+    expect(messages[messages.length - 2], contains('PASS test cleanup'));
+    expect(messages.last, contains('PASS Standalone model runtime'));
+  });
+
+  test('a worker error survives cleanup and fails the runtime stage', () async {
+    final messages = <String>[];
+    final runner = SmokeStageRunner(log: messages.add);
+    var released = false;
+    await expectLater(
+      runner.runWithCleanup<void>(
+        'Standalone model runtime',
+        timeout: const Duration(seconds: 5),
+        operation: (cleanup) async {
+          cleanup.add('fake interpreter', () => released = true);
+          await Isolate.run(_failNativeInference);
+        },
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          'native invocation failed',
+        ),
+      ),
+    );
+
+    expect(released, isTrue);
+    expect(messages[messages.length - 2], contains('PASS test cleanup'));
+    expect(messages.last, contains('FAIL Standalone model runtime'));
+    expect(messages.last, contains('_failNativeInference'));
+    expect(
+      messages.join('\n'),
+      isNot(contains('PASS Standalone model runtime')),
+    );
+  });
+
+  test('a cleanup failure blocks runtime success', () async {
+    final messages = <String>[];
+    final runner = SmokeStageRunner(log: messages.add);
+    await expectLater(
+      runner.runWithCleanup<void>(
+        'Standalone model runtime',
+        timeout: const Duration(seconds: 5),
+        operation: (cleanup) async {
+          cleanup.add(
+            'fake interpreter',
+            () => throw StateError('close failed'),
+          );
+        },
+      ),
+      throwsA(isA<SmokeCleanupException>()),
+    );
+
+    expect(messages.last, contains('FAIL Standalone model runtime'));
+    expect(
+      messages.join('\n'),
+      isNot(contains('PASS Standalone model runtime')),
     );
   });
 

@@ -418,8 +418,11 @@ XCTest launches the test app and reports the Flutter startup and standalone
 model runtime cases. CI gives simulator boot and test compilation separate
 limits and caps XCTest execution at seven minutes. The runtime Dart case has
 a five-minute limit. The two-minute native preflight limit runs on the test
-isolate while the synchronous TFLite calls run on a background isolate. CI
-uploads the Xcode result bundle, result JSON, and available simulator logs.
+isolate while the synchronous TFLite calls and tensor contract checks run on a
+background isolate. Contract failures report expected and actual values to the
+test isolate. The runtime case logs success after inference, output validation,
+and cleanup all pass. CI uploads the Xcode result bundle, result JSON, and
+available simulator logs.
 
 For a signed physical-device run, select an iPhone and configure development
 signing for Runner and RunnerTests. Run the config-only command without

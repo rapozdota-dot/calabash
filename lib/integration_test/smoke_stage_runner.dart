@@ -42,6 +42,24 @@ class SmokeStageRunner {
     _log(_format(stage, event, Stopwatch(), details));
   }
 
+  /// Reports the stage as passed only after the operation and cleanup succeed.
+  Future<T> runWithCleanup<T>(
+    String stage, {
+    required Duration timeout,
+    required Future<T> Function(SmokeCleanupStack cleanup) operation,
+  }) {
+    final cleanup = SmokeCleanupStack(this);
+    return run<T>(
+      stage,
+      timeout: timeout,
+      operation: () => runWithSmokeCleanup(
+        runner: this,
+        cleanup: cleanup,
+        operation: () => operation(cleanup),
+      ),
+    );
+  }
+
   Future<T> run<T>(
     String stage, {
     required Duration timeout,
