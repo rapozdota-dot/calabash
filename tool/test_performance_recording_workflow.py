@@ -9,15 +9,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class PerformanceRecordingWorkflowTest(unittest.TestCase):
     def test_ios_smoke_test_timeout_and_failure_log_capture_are_explicit(self):
-        workflow = (ROOT / '.github' / 'workflows' / 'build-ios.yml').read_text()
-        smoke_test = (ROOT / 'integration_test' / 'model_runtime_smoke_test.dart').read_text()
-        smoke_support = (ROOT / 'lib' / 'integration_test' / 'smoke_stage_runner.dart').read_text()
+        workflow = (ROOT / '.github' / 'workflows' / 'build-ios.yml').read_text(encoding='utf-8')
+        smoke_test = (ROOT / 'integration_test' / 'model_runtime_smoke_test.dart').read_text(encoding='utf-8')
+        smoke_support = (ROOT / 'lib' / 'integration_test' / 'smoke_stage_runner.dart').read_text(encoding='utf-8')
 
         self.assertRegex(
             workflow,
             re.compile(
                 r'name: Smoke test the actual iOS TFLite runtime before packaging\n'
-                r'\s+timeout-minutes: 20'
+                r'\s+timeout-minutes: 7'
             ),
         )
         self.assertRegex(
@@ -28,13 +28,18 @@ class PerformanceRecordingWorkflowTest(unittest.TestCase):
                 r'\s+uses: actions/upload-artifact@v4'
             ),
         )
-        self.assertIn('path: dist/Calabash-model-smoke.log', workflow)
+        self.assertIn('dist/Calabash-model-smoke*', workflow)
+        self.assertIn('xcodebuild build-for-testing', workflow)
+        self.assertIn('xcodebuild test-without-building', workflow)
+        self.assertIn('tool/validate_ios_release.py xctest', workflow)
+        self.assertLess(workflow.index('validate_ios_release.py xctest'),
+                        workflow.index('name: Build unsigned iOS app'))
         self.assertIn('timeout: const Timeout(smokeTestTimeout)', smoke_test)
         self.assertIn('const smokeTestTimeout = Duration(minutes: 5);', smoke_support)
 
     def test_research_recording_is_enabled_by_default_and_reaches_build_metadata(self):
-        workflow = (ROOT / '.github' / 'workflows' / 'build-ios.yml').read_text()
-        readme = (ROOT / 'README.md').read_text()
+        workflow = (ROOT / '.github' / 'workflows' / 'build-ios.yml').read_text(encoding='utf-8')
+        readme = (ROOT / 'README.md').read_text(encoding='utf-8')
 
         self.assertRegex(
             workflow,

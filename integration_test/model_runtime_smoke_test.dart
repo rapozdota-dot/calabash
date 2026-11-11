@@ -10,6 +10,8 @@ import 'package:calabash_maturity_detection/models/detection.dart';
 import 'package:calabash_maturity_detection/services/live_inference_worker.dart';
 import 'package:calabash_maturity_detection/services/model_service.dart';
 import 'package:calabash_maturity_detection/utils/constants.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:integration_test/integration_test.dart';
@@ -38,117 +40,143 @@ void checkResult(ModelDetectionResult result) {
   }
 }
 
+Future<void> _verifyNativeModel(TransferableTypedData model) =>
+    Isolate.run(() => _runNativePreflight(model));
+
+Future<void> _runNativePreflight(TransferableTypedData model) async {
+  final stages = SmokeStageRunner();
+  final cleanup = SmokeCleanupStack(stages);
+  await runWithSmokeCleanup<void>(
+    runner: stages,
+    cleanup: cleanup,
+    operation: () async {
+      final interpreter = stages.runSync(
+        'TFLite interpreter creation and tensor allocation',
+        () {
+          final options = InterpreterOptions()..threads = 2;
+          try {
+            // tflite_flutter allocates tensors in the interpreter constructor.
+            return Interpreter.fromBuffer(
+              model.materialize().asUint8List(),
+              options: options,
+            );
+          } finally {
+            options.delete();
+          }
+        },
+      );
+      cleanup.add('direct interpreter', interpreter.close);
+
+      final input = stages.runSync('Standalone YOLO tensor metadata', () {
+        final input = interpreter.getInputTensors().single;
+        expect(input.type, TensorType.float32);
+        final size = AppConstants.modelInputSize;
+        expect(input.shape, [1, 3, size, size]);
+        final outputs = interpreter.getOutputTensors();
+        // Shapes and layout from the standalone V7 FP32 export.
+        expect(
+          outputs.map((output) => output.shape.join(',')),
+          unorderedEquals(['1,39,8400', '1,32,160,160']),
+        );
+        for (final output in outputs) {
+          expect(output.type, TensorType.float32);
+        }
+        return input;
+      });
+
+      stages.runSync('Standalone YOLO inference', () {
+        final pixels = Float32List(input.numElements())
+          ..fillRange(0, input.numElements(), 114 / 255);
+        input.data = pixels.buffer.asUint8List();
+        interpreter.invoke();
+      });
+
+      stages.runSync('Segmentation output validation', () {
+        for (final output in interpreter.getOutputTensors()) {
+          final bytes = output.data;
+          final elementCount = output.numElements();
+          expect(
+            bytes.lengthInBytes,
+            elementCount * Float32List.bytesPerElement,
+          );
+          final values = bytes.buffer.asFloat32List(
+            bytes.offsetInBytes,
+            elementCount,
+          );
+          expect(
+            values.every((value) => value.isFinite),
+            isTrue,
+            reason: 'Nonfinite native output: ${output.shape}',
+          );
+          if (output.shape[1] == 39) {
+            // The detection tensor stores 4 box channels followed by 3 class
+            // scores per anchor and 32 mask coefficients.
+            final anchors = output.shape[2];
+            expect(
+              values
+                  .getRange(4 * anchors, 7 * anchors)
+                  .every((score) => score >= 0 && score <= 1),
+              isTrue,
+            );
+          }
+        }
+      });
+    },
+  );
+}
+
 void main() {
   final stages = SmokeStageRunner();
-  stages.mark('test initialization', 'START');
+  stages.mark('Flutter integration binding', 'START');
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  stages.mark('test initialization', 'PASS');
+  stages.mark('Flutter integration binding', 'PASS');
+
+  testWidgets('Flutter startup', (tester) async {
+    await stages.run<void>(
+      'Flutter startup and first frame',
+      timeout: smokeStageTimeouts['Flutter startup']!,
+      operation: () async {
+        expect(
+          Platform.isIOS,
+          isTrue,
+          reason: 'Run this smoke test with an iOS target.',
+        );
+        const frame = ValueKey('ios-smoke-startup');
+        await tester.pumpWidget(const SizedBox(key: frame));
+        expect(find.byKey(frame), findsOneWidget);
+      },
+    );
+  }, timeout: Timeout(smokeStageTimeouts['Flutter startup']!));
 
   testWidgets(
-    'bundled model executes in native iOS TFLite workers and parses outputs',
+    'Standalone model runtime',
     (tester) async {
       await tester.runAsync(() async {
-        await stages.run<void>(
-          'app/test initialization',
-          timeout: smokeStageTimeouts['test initialization']!,
-          operation: () {
-            expect(
-              Platform.isIOS,
-              isTrue,
-              reason: 'Run this smoke test with an iOS target.',
-            );
-          },
+        final asset = await stages.run<ByteData>(
+          'Standalone YOLO model asset loading',
+          timeout: smokeStageTimeouts['model asset loading']!,
+          operation: () => rootBundle.load(AppConstants.modelAssetPath),
         );
+        // Native FFI work is synchronous. Keep it off the test isolate so the
+        // timeout can still report a failure if creation or invocation stalls.
+        await stages.run<void>(
+          'Native TFLite preflight',
+          timeout: smokeStageTimeouts['native preflight']!,
+          operation: () => _verifyNativeModel(
+            TransferableTypedData.fromList([
+              asset.buffer.asUint8List(
+                asset.offsetInBytes,
+                asset.lengthInBytes,
+              ),
+            ]),
+          ),
+        );
+
         final cleanup = SmokeCleanupStack(stages);
         await runWithSmokeCleanup<void>(
           runner: stages,
           cleanup: cleanup,
           operation: () async {
-            // Keep a direct native-runtime preflight before the app's worker
-            // paths. This also ensures the simulator can load and invoke the
-            // bundled TFLite library on the integration-test isolate.
-            final options = InterpreterOptions()..threads = 2;
-            var optionsDeleted = false;
-            void deleteOptions() {
-              if (optionsDeleted) return;
-              optionsDeleted = true;
-              options.delete();
-            }
-
-            Future<Interpreter>? interpreterLoad;
-            late final Interpreter interpreter;
-            try {
-              interpreter = await stages.run<Interpreter>(
-                'TFLite model loading and interpreter initialization',
-                timeout: smokeStageTimeouts['interpreter initialization']!,
-                operation: () {
-                  interpreterLoad = Interpreter.fromAsset(
-                    AppConstants.modelAssetPath,
-                    options: options,
-                  );
-                  return interpreterLoad!;
-                },
-                onLateCompletion: () async {
-                  try {
-                    (await interpreterLoad!).close();
-                  } finally {
-                    deleteOptions();
-                  }
-                },
-              );
-            } catch (error) {
-              if (error is! SmokeStageTimeoutException) deleteOptions();
-              rethrow;
-            }
-            deleteOptions();
-            cleanup.add('direct interpreter', interpreter.close);
-
-            final input = interpreter.getInputTensor(0);
-            expect(input.type, TensorType.float32);
-            expect(input.shape.join(','), anyOf('1,3,640,640', '1,640,640,3'));
-            final outputs = interpreter.getOutputTensors();
-            expect(outputs, hasLength(2));
-            expect(
-              outputs.map((output) => output.shape.join(',')),
-              contains('1,39,8400'),
-            );
-            expect(
-              outputs.map((output) => output.shape.join(',')),
-              contains(anyOf('1,32,160,160', '1,160,160,32')),
-            );
-
-            stages.runSync('direct model inference and output validation', () {
-              // A neutral RGB input is independent of NHWC/NCHW layout.
-              final pixels = Float32List(640 * 640 * 3)
-                ..fillRange(0, 640 * 640 * 3, 114 / 255);
-              input.data = pixels.buffer.asUint8List();
-              interpreter.invoke();
-              for (final output in interpreter.getOutputTensors()) {
-                expect(output.type, TensorType.float32);
-                final values = output.data.buffer.asFloat32List();
-                expect(
-                  values.every((value) => value.isFinite),
-                  isTrue,
-                  reason: 'Nonfinite native output: ${output.shape}',
-                );
-                if (output.shape.join(',') == '1,39,8400') {
-                  for (var channel = 4; channel < 7; channel++) {
-                    expect(
-                      values
-                          .sublist(channel * 8400, (channel + 1) * 8400)
-                          .every((score) => score >= 0 && score <= 1),
-                      isTrue,
-                    );
-                  }
-                }
-                // Contract evidence only; these are not device benchmark results.
-                // ignore: avoid_print
-                print(
-                  'Native iOS TFLite output ${output.shape}: ${output.type}, finite',
-                );
-              }
-            });
-
             final image = img.Image(width: 96, height: 64);
             for (var y = 0; y < image.height; y++) {
               for (var x = 0; x < image.width; x++) {
@@ -205,15 +233,13 @@ void main() {
                 }
               },
             );
-            expect([photo.imageWidth, photo.imageHeight], [96, 64]);
-            expect(photo.fileReadMicros, isNonNegative);
-            expect(photo.decodeMicros, isNonNegative);
-            expect(photo.modelInitializationMicros, isNonNegative);
-            checkResult(photo.modelResult);
-            // ignore: avoid_print
-            print(
-              'Native photo pipeline: ${photo.modelResult.detections.length} detections parsed',
-            );
+            stages.runSync('Photo postprocessing and segmentation', () {
+              expect([photo.imageWidth, photo.imageHeight], [96, 64]);
+              expect(photo.fileReadMicros, isNonNegative);
+              expect(photo.decodeMicros, isNonNegative);
+              expect(photo.modelInitializationMicros, isNonNegative);
+              checkResult(photo.modelResult);
+            });
 
             // This sends synthetic BGRA frames through the live worker. It does
             // not initialize a physical camera, which is unavailable in a simulator.
@@ -253,34 +279,32 @@ void main() {
                 ),
               ),
             );
-            expect(result.frameTransferMicros, isNonNegative);
-            checkResult(
-              ModelDetectionResult(
-                detections: result.toDetections(),
-                timings: result.modelTimings,
-              ),
-            );
-            for (var index = 0; index < 3; index++) {
-              expect(
-                LiveInferenceDetection(
-                  left: 0,
-                  top: 0,
-                  width: 1,
-                  height: 1,
-                  classIndex: index,
-                  confidence: 1,
-                ).toDetection().maturityClass,
-                [
-                  MaturityClass.immature,
-                  MaturityClass.mature,
-                  MaturityClass.overmature,
-                ][index],
+            stages.runSync('Live worker result validation', () {
+              expect(result.frameTransferMicros, isNonNegative);
+              checkResult(
+                ModelDetectionResult(
+                  detections: result.toDetections(),
+                  timings: result.modelTimings,
+                ),
               );
-            }
-            // ignore: avoid_print
-            print(
-              'Native live pipeline: ${result.backendInfo.label}, ${result.detections.length} detections parsed',
-            );
+              for (var index = 0; index < 3; index++) {
+                expect(
+                  LiveInferenceDetection(
+                    left: 0,
+                    top: 0,
+                    width: 1,
+                    height: 1,
+                    classIndex: index,
+                    confidence: 1,
+                  ).toDetection().maturityClass,
+                  [
+                    MaturityClass.immature,
+                    MaturityClass.mature,
+                    MaturityClass.overmature,
+                  ][index],
+                );
+              }
+            });
           },
         );
       });
@@ -290,8 +314,7 @@ void main() {
         details: 'all inference paths completed',
       );
     },
-    // The test_api file-loading watchdog is a separate 12-minute timeout. This
-    // explicit case timeout bounds the actual widget test before that watchdog.
+    // The XCTest workflow limit also covers launch and native code stalls.
     timeout: const Timeout(smokeTestTimeout),
   );
 }

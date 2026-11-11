@@ -1,10 +1,33 @@
-"""Dependency-free metadata/IPA guards. Native inference is a separate CI gate."""
+"""Validate model metadata, native smoke results, and packaged IPA contents."""
 import argparse
 import hashlib
 import json
 from pathlib import Path
 import plistlib
 import zipfile
+
+
+def validate_xctest(path):
+    def test_cases(nodes):
+        for node in nodes:
+            if node['nodeType'] == 'Test Case':
+                yield node
+            else:
+                yield from test_cases(node.get('children', []))
+
+    expected = {'testFlutterStartup', 'testStandaloneModelRuntime'}
+    passed = set()
+    report = json.loads(Path(path).read_text(encoding='utf-8'))
+    for case in test_cases(report['testNodes']):
+        identifier = case['nodeIdentifier']
+        if case['result'] != 'Passed':
+            raise ValueError(f'XCTest {identifier}: {case["result"]}')
+        name = identifier.rsplit('/', 1)[-1].removesuffix('()')
+        passed.add(name)
+    missing = expected - passed
+    if missing:
+        raise ValueError(f'XCTest is missing required Dart results: {", ".join(sorted(missing))}')
+    return {'passed_tests': sorted(passed)}
 
 
 def validate_model(path):
@@ -60,14 +83,20 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     model = commands.add_parser('model')
     model.add_argument('path', type=Path)
+    xctest = commands.add_parser('xctest')
+    xctest.add_argument('path', type=Path)
     ipa = commands.add_parser('ipa')
     ipa.add_argument('path', type=Path)
     ipa.add_argument('--bundle-id', required=True)
     ipa.add_argument('--build-number', required=True)
     ipa.add_argument('--model-sha256', required=True)
     args = parser.parse_args()
-    result = validate_model(args.path) if args.command == 'model' else validate_ipa(
-        args.path, args.bundle_id, args.build_number, args.model_sha256)
+    if args.command == 'model':
+        result = validate_model(args.path)
+    elif args.command == 'xctest':
+        result = validate_xctest(args.path)
+    else:
+        result = validate_ipa(args.path, args.bundle_id, args.build_number, args.model_sha256)
     print(json.dumps(result, indent=2))
 
 

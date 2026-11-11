@@ -392,7 +392,17 @@ python -m unittest discover -s tool -p test_validate_ios_release.py
 python -m unittest tool.test_performance_recording_workflow
 python tool/validate_ios_release.py model assets/model/model.tflite
 # macOS with a booted iPhone simulator; uses the actual iOS TFLite pod:
-flutter test integration_test/model_runtime_smoke_test.dart -d <simulator-udid>
+flutter pub get
+flutter build ios --config-only --simulator --debug --no-pub \
+  --target integration_test/model_runtime_smoke_test.dart
+destination="platform=iOS Simulator,id=<simulator-udid>"
+derived_data="$PWD/build/calabash-ios-smoke"
+xcodebuild build-for-testing -workspace ios/Runner.xcworkspace -scheme Runner \
+  -configuration Debug -destination "$destination" -derivedDataPath "$derived_data" \
+  CODE_SIGNING_ALLOWED=NO
+xcodebuild test-without-building -workspace ios/Runner.xcworkspace -scheme Runner \
+  -configuration Debug -destination "$destination" -derivedDataPath "$derived_data" \
+  -parallel-testing-enabled NO
 ```
 
 The CI smoke test emits timestamped stage logs and validates float32 tensor
@@ -404,11 +414,17 @@ deterministic postprocessor tests cover mask reconstruction separately. Syntheti
 inputs do not prove fruit-recognition accuracy, real-camera behavior, iPhone 12
 performance, or iOS 26.7.1 compatibility. A native smoke failure stops the job
 before release build/IPA packaging; a queued CI configuration is not a passed run.
-The test case has a five-minute timeout; the pinned `test_api` runner also has a
-separate 12-minute suite-loading watchdog, while the GitHub Actions smoke step is
-capped at 20 minutes. Async stages have their own limits. A synchronous native
-`Interpreter.invoke()` cannot be interrupted by a Dart future timeout; its
-stage-start log and the workflow cap bound diagnosis at the runner level.
+XCTest launches the test app and reports the Flutter startup and standalone
+model runtime cases. CI gives simulator boot and test compilation separate
+limits and caps XCTest execution at seven minutes. The runtime Dart case has
+a five-minute limit. The two-minute native preflight limit runs on the test
+isolate while the synchronous TFLite calls run on a background isolate. CI
+uploads the Xcode result bundle, result JSON, and available simulator logs.
+
+For a signed physical-device run, select an iPhone and configure development
+signing for Runner and RunnerTests. Run the config-only command without
+`--simulator` and choose **Product → Test** in `ios/Runner.xcworkspace`.
+Use the signed app on the iPhone to validate real camera and gallery behavior.
 
 ## Build APK
 
@@ -466,8 +482,12 @@ GitHub Actions workflow instead of a local iOS build:
 
 Automatic iOS builds are disabled. Only start this workflow manually with
 `workflow_dispatch` when an iOS build is explicitly requested. It pins Flutter
-`3.38.7`, runs analysis and tests, installs CocoaPods dependencies during the
-iOS build, and runs `flutter build ios --release --no-codesign`. It packages
+`3.38.7`, caches the SDK, pub packages, and CocoaPods downloads, and runs
+analysis, Flutter tests, and the native XCTest smoke gate. The simulator test
+bundle is compiled once. The unsigned IPA uses a separate device release build.
+CI compares the source asset, simulator bundle, and IPA model against the
+standalone V7 FP32 SHA-256 pinned as `IOS_MODEL_SHA256` in the workflow. Update
+that pin when intentionally replacing the standalone model. CI packages
 `Payload/Runner.app` into `dist/Calabash-unsigned.ipa` and uploads that IPA as a
 workflow artifact. A named iOS GitHub Release is created only when
 `publish_release=true`. Each build uses its workflow run number as the app build number.

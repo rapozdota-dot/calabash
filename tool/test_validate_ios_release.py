@@ -7,7 +7,39 @@ import tempfile
 import unittest
 import zipfile
 
-from validate_ios_release import validate_ipa, validate_model
+from validate_ios_release import validate_ipa, validate_model, validate_xctest
+
+
+class XCTestValidationTest(unittest.TestCase):
+    def validate(self, *tests):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'tests.json'
+            path.write_text(json.dumps({
+                'testNodes': [{
+                    'nodeType': 'Test Suite',
+                    'children': [
+                        {'nodeType': 'Test Case', 'nodeIdentifier': f'RunnerTests/{name}()',
+                         'result': result}
+                        for name, result in tests
+                    ],
+                }],
+            }), encoding='utf-8')
+            return validate_xctest(path)
+
+    def test_requires_both_dart_cases(self):
+        startup = ('testFlutterStartup', 'Passed')
+        runtime = ('testStandaloneModelRuntime', 'Passed')
+        self.assertEqual(self.validate(startup, runtime)['passed_tests'],
+                         [startup[0], runtime[0]])
+        for tests in ((), (startup,), (runtime,), (('testExample', 'Passed'),)):
+            with self.subTest(tests=tests), self.assertRaisesRegex(ValueError, 'missing'):
+                self.validate(*tests)
+
+    def test_failed_or_skipped_runtime_blocks_packaging(self):
+        for status in ('Failed', 'Skipped', 'Expected Failure'):
+            with self.subTest(status=status), self.assertRaisesRegex(ValueError, status):
+                self.validate(('testFlutterStartup', 'Passed'),
+                              ('testStandaloneModelRuntime', status))
 
 
 class ReleaseValidationTest(unittest.TestCase):

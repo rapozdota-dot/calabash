@@ -3,8 +3,9 @@ import 'dart:async';
 const smokeTestTimeout = Duration(minutes: 5);
 
 const smokeStageTimeouts = <String, Duration>{
-  'test initialization': Duration(seconds: 30),
-  'interpreter initialization': Duration(minutes: 2),
+  'Flutter startup': Duration(seconds: 30),
+  'model asset loading': Duration(seconds: 30),
+  'native preflight': Duration(minutes: 2),
   'photo processing': Duration(minutes: 2),
   'live worker startup': Duration(seconds: 75),
   'live worker inference': Duration(minutes: 2),

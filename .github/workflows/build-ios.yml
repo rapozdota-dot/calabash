@@ -26,8 +26,12 @@ jobs:
     runs-on: macos-15
     permissions:
       contents: write
+    defaults:
+      run:
+        shell: bash
     env:
       CALABASH_PERF_DEVICE: ${{ inputs.device_label }}
+      IOS_MODEL_SHA256: dbd742665d511a425c04904dcf6fd72298450b4b64d1b87e9e466115dfeeb4cb
 
     steps:
       - name: Checkout repository
@@ -38,29 +42,43 @@ jobs:
         with:
           flutter-version: "3.38.7"
           channel: stable
+          cache: true
+          pub-cache: true
+
+      - name: Cache CocoaPods downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: cocoapods-${{ runner.os }}-${{ runner.arch }}-flutter-3.38.7-${{ hashFiles('ios/Podfile', 'ios/Podfile.lock', 'pubspec.lock') }}
 
       - name: Get Flutter dependencies
         run: flutter pub get
 
       - name: Analyze project
-        run: flutter analyze
+        run: flutter analyze --no-pub
 
       - name: Run tests
         run: |
-          flutter test
-          flutter test --dart-define=CALABASH_PERF=true test/performance_probe_test.dart
+          flutter test --no-pub
+          flutter test --no-pub --dart-define=CALABASH_PERF=true test/performance_probe_test.dart
 
       - name: Validate model metadata and release guards
         run: |
           python3 -m unittest discover -s tool -p 'test_*.py'
           mkdir -p dist
+          printf '%s  %s\n' "$IOS_MODEL_SHA256" assets/model/model.tflite | shasum -a 256 -c
           python3 tool/validate_ios_release.py model assets/model/model.tflite > dist/Calabash-model-metadata.json
 
       - name: Boot an available iPhone simulator
+        timeout-minutes: 5
         run: |
-          xcrun simctl list devices available --json > "$RUNNER_TEMP/calabash-simulators.json"
-          simulator_id=$(python3 - "$RUNNER_TEMP/calabash-simulators.json" <<'PY'
-          import json, sys
+          {
+          printf '[%s][iOS SMOKE] Selecting iPhone simulator\n' "$(date -u +%FT%TZ)"
+          xcrun simctl list devices available --json > dist/Calabash-ios-simulators.json
+          simulator=$(python3 - dist/Calabash-ios-simulators.json <<'PY'
+          import json
+          import sys
+
           with open(sys.argv[1]) as source:
               devices = json.load(source)['devices']
           phones = [device for runtime, items in devices.items() if '.iOS-' in runtime
@@ -68,27 +86,77 @@ jobs:
           if not phones:
               raise SystemExit('No available iPhone simulator; native model validation is required.')
           phones.sort(key=lambda device: device['state'] != 'Booted')
-          print(phones[0]['udid'])
+          phone = phones[0]
+          print(phone['udid'], phone['state'], phone['name'])
           PY
           )
+          read -r simulator_id state name <<< "$simulator"
+          printf '[%s][iOS SMOKE] Simulator startup START %s (%s, %s)\n' \
+            "$(date -u +%FT%TZ)" "$name" "$simulator_id" "$state"
           echo "IOS_SIMULATOR_ID=$simulator_id" >> "$GITHUB_ENV"
-          state=$(xcrun simctl list devices --json | python3 -c 'import json,sys; target=sys.argv[1]; print(next(d["state"] for group in json.load(sys.stdin)["devices"].values() for d in group if d["udid"] == target))' "$simulator_id")
-          if [ "$state" != "Booted" ]; then xcrun simctl boot "$simulator_id"; fi
+          if [[ "$state" == "Shutdown" ]]; then xcrun simctl boot "$simulator_id"; fi
           xcrun simctl bootstatus "$simulator_id" -b
+          printf '[%s][iOS SMOKE] Simulator readiness PASSED\n' "$(date -u +%FT%TZ)"
+          } 2>&1 | tee dist/Calabash-ios-simulator-boot.log
+
+      - name: Build the Flutter smoke test and XCTest bundle
+        timeout-minutes: 15
+        run: |
+          {
+            printf '[%s][iOS SMOKE] Flutter test configuration START\n' "$(date -u +%FT%TZ)"
+            # Config-only generates FLUTTER_TARGET and installs pods if needed.
+            flutter build ios --config-only --simulator --debug --no-pub \
+              --target integration_test/model_runtime_smoke_test.dart
+            printf '[%s][iOS SMOKE] XCTest build START\n' "$(date -u +%FT%TZ)"
+            xcodebuild build-for-testing -workspace ios/Runner.xcworkspace -scheme Runner \
+              -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+              -derivedDataPath "$RUNNER_TEMP/calabash-ios-smoke" CODE_SIGNING_ALLOWED=NO
+            simulator_model="$RUNNER_TEMP/calabash-ios-smoke/Build/Products/Debug-iphonesimulator/Runner.app/Frameworks/App.framework/flutter_assets/assets/model/model.tflite"
+            printf '%s  %s\n' "$IOS_MODEL_SHA256" "$simulator_model" | shasum -a 256 -c
+            printf '[%s][iOS SMOKE] XCTest build and bundled model SHA-256 PASSED\n' "$(date -u +%FT%TZ)"
+          } 2>&1 | tee dist/Calabash-ios-smoke-build.log
 
       - name: Smoke test the actual iOS TFLite runtime before packaging
-        timeout-minutes: 20
+        timeout-minutes: 7
         run: |
-          set -o pipefail
-          flutter test integration_test/model_runtime_smoke_test.dart --no-pub \
-            -d "$IOS_SIMULATOR_ID" 2>&1 | tee dist/Calabash-model-smoke.log
+          echo "IOS_SMOKE_START_TIME=$(date '+%Y-%m-%d %H:%M:%S')" >> "$GITHUB_ENV"
+          {
+            result="$GITHUB_WORKSPACE/dist/Calabash-model-smoke.xcresult"
+            printf '[%s][iOS SMOKE] XCTest application launch and Dart execution START\n' "$(date -u +%FT%TZ)"
+            test_status=0
+            xcodebuild test-without-building -workspace ios/Runner.xcworkspace -scheme Runner \
+              -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+              -derivedDataPath "$RUNNER_TEMP/calabash-ios-smoke" -parallel-testing-enabled NO \
+              -test-timeouts-enabled YES -default-test-execution-time-allowance 300 \
+              -maximum-test-execution-time-allowance 300 -resultBundlePath "$result" \
+              || test_status=$?
+            if [[ -d "$result" ]]; then
+              xcrun xcresulttool get test-results tests --path "$result" --format json \
+                > dist/Calabash-model-smoke-tests.json
+            fi
+            if [[ "$test_status" -ne 0 ]]; then exit "$test_status"; fi
+            python3 tool/validate_ios_release.py xctest dist/Calabash-model-smoke-tests.json
+            printf '[%s][iOS SMOKE] Flutter startup and standalone model runtime PASSED\n' "$(date -u +%FT%TZ)"
+          } 2>&1 | tee dist/Calabash-model-smoke.log
+
+      - name: Collect simulator logs after the XCTest run
+        if: ${{ always() && env.IOS_SMOKE_START_TIME != '' }}
+        timeout-minutes: 2
+        continue-on-error: true
+        run: |
+          xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --start "$IOS_SMOKE_START_TIME" \
+            --style compact --info \
+            --predicate 'process == "Runner" OR eventMessage CONTAINS "com.example.calabashMaturityDetection"' \
+            > dist/Calabash-ios-simulator-runtime.log 2>&1
 
       - name: Preserve iOS model smoke-test diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: calabash-ios-model-smoke-${{ github.run_number }}
-          path: dist/Calabash-model-smoke.log
+          path: |
+            dist/Calabash-ios-*
+            dist/Calabash-model-smoke*
           if-no-files-found: warn
           retention-days: 14
 
@@ -96,13 +164,12 @@ jobs:
         env:
           CALABASH_PERF: ${{ inputs.performance_recording && 'true' || 'false' }}
         run: |
-          model_sha=$(shasum -a 256 assets/model/model.tflite | awk '{print $1}')
-          flutter build ios --release --no-codesign --build-number=${{ github.run_number }} \
+          flutter build ios --release --no-codesign --no-pub --target lib/main.dart --build-number=${{ github.run_number }} \
             --dart-define="CALABASH_PERF=$CALABASH_PERF" \
             --dart-define="CALABASH_SOURCE_REVISION=$GITHUB_SHA" \
             --dart-define="CALABASH_BUILD_NUMBER=$GITHUB_RUN_NUMBER" \
             --dart-define="CALABASH_PERF_DEVICE=$CALABASH_PERF_DEVICE" \
-            --dart-define="CALABASH_MODEL_SHA256=$model_sha"
+            --dart-define="CALABASH_MODEL_SHA256=$IOS_MODEL_SHA256"
 
       - name: Record source revision
         env:
@@ -121,7 +188,7 @@ jobs:
             echo "Recording define: CALABASH_PERF=$CALABASH_PERF"
             echo "Device label (manually supplied): $CALABASH_PERF_DEVICE"
             echo "Native model smoke: passed on iOS simulator (not physical-device evidence)"
-            echo "Model SHA-256: $(shasum -a 256 assets/model/model.tflite | awk '{print $1}')"
+            echo "Model SHA-256: $IOS_MODEL_SHA256"
           } > dist/Calabash-source-info.txt
 
       - name: Package IPA
@@ -134,10 +201,9 @@ jobs:
 
       - name: Validate IPA structure, app identity, build number, and bundled model
         run: |
-          model_sha=$(shasum -a 256 assets/model/model.tflite | awk '{print $1}')
           python3 tool/validate_ios_release.py ipa dist/Calabash-unsigned.ipa \
             --bundle-id com.example.calabashMaturityDetection \
-            --build-number "$GITHUB_RUN_NUMBER" --model-sha256 "$model_sha" \
+            --build-number "$GITHUB_RUN_NUMBER" --model-sha256 "$IOS_MODEL_SHA256" \
             > dist/Calabash-ipa-validation.json
 
       - name: Upload IPA artifact
