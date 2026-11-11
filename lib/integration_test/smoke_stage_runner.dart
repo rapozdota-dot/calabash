@@ -4,10 +4,10 @@ const smokeTestTimeout = Duration(minutes: 5);
 
 const smokeStageTimeouts = <String, Duration>{
   'test initialization': Duration(seconds: 30),
-  'interpreter initialization': Duration(minutes: 2),
-  'photo processing': Duration(minutes: 2),
-  'live worker startup': Duration(seconds: 75),
-  'live worker inference': Duration(minutes: 2),
+  'interpreter initialization': Duration(seconds: 75),
+  'photo fixture': Duration(seconds: 30),
+  'photo processing': Duration(minutes: 1),
+  'live worker inference': Duration(minutes: 1),
   'cleanup': Duration(seconds: 30),
 };
 

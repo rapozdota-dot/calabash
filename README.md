@@ -326,9 +326,11 @@ detection. The retry buffer is bounded; overflow is counted as
    and IPA validation to succeed. Download
    `Calabash-unsigned.ipa` and `Calabash-source-info.txt` from that exact run or
    its `ios-<run-number>` release only when publication was explicitly enabled.
-   The IPA artifact also includes model metadata, native smoke log and IPA validation JSON.
+   The IPA artifact also includes model metadata, native smoke log, XCTest results,
+   and IPA validation JSON.
    The separate `calabash-ios-model-smoke-<run-number>` artifact preserves the
-   simulator smoke log even when that step fails and IPA packaging is skipped.
+   simulator selection and boot logs, native build and test logs, and XCTest
+   result bundle when available, even if the workflow fails before packaging.
    Check commit, build number, model checksum and
    `Performance recording: true` in the source-info file.
 5. Before updating, background the existing app, allow its pending CSV batch to
@@ -398,24 +400,44 @@ flutter test --dart-define=CALABASH_PERF=true test/performance_probe_test.dart
 python -m unittest discover -s tool -p test_validate_ios_release.py
 python -m unittest tool.test_performance_recording_workflow
 python tool/validate_ios_release.py model assets/model/model.tflite
-# macOS with a booted iPhone simulator; uses the actual iOS TFLite pod:
-flutter test integration_test/model_runtime_smoke_test.dart -d <simulator-udid>
+# macOS with a booted iPhone simulator, or a paired and signed physical iPhone.
+flutter test integration_test/model_runtime_smoke_test.dart \
+  --dart-define=CALABASH_TFLITE_SMOKE_TRACE=true -d <device-udid>
 ```
 
-The CI smoke test emits timestamped stage logs and validates float32 tensor
-signatures, finite native outputs, confidence channels, non-square photo
-preprocessing/decoding, output parsing, and the live isolate/BGRA/backend path.
-Metadata validation checks class order.
-Returned masks/classes are checked when the synthetic inputs produce detections;
-deterministic postprocessor tests cover mask reconstruction separately. Synthetic
-inputs do not prove fruit-recognition accuracy, real-camera behavior, iPhone 12
-performance, or iOS 26.7.1 compatibility. A native smoke failure stops the job
-before release build/IPA packaging; a queued CI configuration is not a passed run.
-The test case has a five-minute timeout; the pinned `test_api` runner also has a
-separate 12-minute suite-loading watchdog, while the GitHub Actions smoke step is
-capped at 20 minutes. Async stages have their own limits. A synchronous native
-`Interpreter.invoke()` cannot be interrupted by a Dart future timeout; its
-stage-start log and the workflow cap bound diagnosis at the runner level.
+CI waits for a specific iPhone simulator to finish booting, compiles the Debug
+test app and `RunnerTests` once, then executes the existing Dart suite with
+Flutter's native XCTest bridge. This avoids the host Dart VM service and DDS
+attachment used by `flutter test -d`. Flutter has a documented race in simulator
+log discovery after compilation. A loading timeout alone cannot distinguish
+that race from an app launch failure.
+[Flutter simulator launch issue](https://github.com/flutter/flutter/issues/181771)
+
+The XCTest result must contain a passed Flutter startup check, a passed photo
+pipeline check, and a passed live BGRA worker check. Native tensor signatures
+and finite raw outputs are validated before application decoding. Returned
+masks and classes are checked when the synthetic images produce detections.
+Separate postprocessor tests exercise mask and confidence behavior, and model
+metadata validation checks class order.
+
+The six-minute CI runtime budget starts after compilation. Individual Dart
+operations have shorter deadlines. In smoke builds, UTC worker logs identify
+the last operation entered, including delegate setup, interpreter creation and
+tensor allocation, signature validation, and `Interpreter.invoke()`. The pinned
+plugin performs creation and allocation in one call. Both production inference
+paths run off the test isolate so a stalled native call can still be reported.
+Use the XCTest bundle and simulator logs to distinguish a missing startup marker
+from a later photo or live worker failure. A failure blocks the release build
+and IPA packaging.
+
+Simulator results cover synthetic inputs with the native TFLite pod. To verify a
+physical iPhone, run the command above using its UDID with Developer Mode and
+development signing configured. For the native bridge, configure the same test
+target with `flutter build ios --config-only --debug --target=integration_test/model_runtime_smoke_test.dart --dart-define=CALABASH_TFLITE_SMOKE_TRACE=true`
+and run Product → Test on the iPhone from `ios/Runner.xcworkspace`.
+Then sign and install the matching release IPA
+and check gallery, capture, and live camera offline with known fruit images.
+Record the device, OS, build number and model SHA-256 with those results.
 
 ## Build APK
 
@@ -473,9 +495,12 @@ GitHub Actions workflow instead of a local iOS build:
 
 Automatic iOS builds are disabled. Only start this workflow manually with
 `workflow_dispatch` when an iOS build is explicitly requested. It pins Flutter
-`3.38.7`, runs analysis and tests, installs CocoaPods dependencies during the
-iOS build, and runs `flutter build ios --release --no-codesign`. It packages
-`Payload/Runner.app` into `dist/Calabash-unsigned.ipa` and uploads that IPA as a
+`3.38.7`, caches the SDK, locked Dart dependencies and CocoaPods downloads,
+and runs analysis, unit tests, and the simulator XCTest gate. CocoaPods still
+resolves and installs for the current checkout. The release build uses the
+normal app entry point and runs `flutter build ios --release --no-codesign`.
+The workflow packages `Payload/Runner.app` into `dist/Calabash-unsigned.ipa`,
+verifies its model against the simulator build's SHA-256, and uploads the IPA as a
 workflow artifact. A named iOS GitHub Release is created only when
 `publish_release=true`. Each build uses its workflow run number as the app build number.
 

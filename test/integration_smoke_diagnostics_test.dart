@@ -45,6 +45,15 @@ void main() {
           ),
         );
         expect(messages.join('\n'), contains('TIMEOUT live worker inference'));
+        expect(
+          messages.join('\n'),
+          isNot(contains('PASS live worker inference')),
+        );
+        final timestamp = messages.first.substring(
+          1,
+          messages.first.indexOf(']'),
+        );
+        expect(DateTime.parse(timestamp).isUtc, isTrue);
       },
     );
 
@@ -132,6 +141,18 @@ void main() {
       for (final timeout in smokeStageTimeouts.values) {
         expect(timeout, greaterThan(Duration.zero));
         expect(timeout, lessThan(smokeTestTimeout));
+      }
+      const stagesByCase = [
+        ['test initialization'],
+        ['photo fixture', 'photo processing', 'cleanup'],
+        ['interpreter initialization', 'live worker inference', 'cleanup'],
+      ];
+      for (final stages in stagesByCase) {
+        final maximum = stages.fold(
+          Duration.zero,
+          (total, stage) => total + smokeStageTimeouts[stage]!,
+        );
+        expect(maximum, lessThan(smokeTestTimeout));
       }
     },
   );

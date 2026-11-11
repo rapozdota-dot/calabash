@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -143,6 +144,9 @@ class ModelService {
       AppConstants.modelInputSize * AppConstants.modelInputSize * 3;
   static const double _letterboxFillValue = 114.0 / 255.0;
   static const bool _enableVerboseModelLogs = false;
+  static const bool _traceNativeSmoke = bool.fromEnvironment(
+    'CALABASH_TFLITE_SMOKE_TRACE',
+  );
 
   static const List<int> _expectedDetectionShape = [
     1,
@@ -190,6 +194,33 @@ class ModelService {
   /// Enables detailed tensor/candidate logs only in debug builds when explicitly switched on.
   bool get _shouldVerboseLog => kDebugMode && _enableVerboseModelLogs;
 
+  /// Smoke builds log from the worker before entering a synchronous FFI call.
+  /// The test isolate can still time out if the worker never returns.
+  void _logNativeSmoke(String event, String operation) {
+    final timestamp = DateTime.now().toUtc().toIso8601String();
+    debugPrintSynchronously(
+      '[$timestamp][tflite-smoke][${Isolate.current.debugName}] '
+      '$event $operation (backend=${_backendConfig.label})',
+    );
+  }
+
+  void _validateNativeSmokeOutputs(_ModelTensorWorkspace workspace) {
+    _logNativeSmoke('START', 'check raw output tensors');
+    final outputs = {
+      'detections': workspace.detectionOutputBuffer,
+      'mask prototypes': workspace.protoOutputBuffer,
+    };
+    for (final output in outputs.entries) {
+      final invalidIndex = output.value.indexWhere((value) => !value.isFinite);
+      if (invalidIndex >= 0) {
+        throw StateError(
+          'Non-finite value at index $invalidIndex in ${output.key} output.',
+        );
+      }
+    }
+    _logNativeSmoke('PASS', 'check raw output tensors');
+  }
+
   /// Shares one initialization future between concurrent callers.
   /// Repeated scans reuse the validated interpreter instead of loading weights each time.
   Future<void> loadModel() {
@@ -209,7 +240,13 @@ class ModelService {
       final runtime = await _createInterpreter();
       _interpreter = runtime.interpreter;
       _delegate = runtime.delegate;
+      if (_traceNativeSmoke) {
+        _logNativeSmoke('START', 'validate tensor signature');
+      }
       _validateModelSignature();
+      if (_traceNativeSmoke) {
+        _logNativeSmoke('PASS', 'validate tensor signature');
+      }
       _logTensorShapes();
       debugPrint(
         'TFLite segmentation model loaded successfully '
@@ -225,18 +262,37 @@ class ModelService {
   /// Creates a TFLite interpreter from bundled assets or transferred model bytes.
   /// Sets thread/delegate options and releases native option objects on success or failure.
   Future<_InterpreterRuntime> _createInterpreter() async {
+    if (_traceNativeSmoke) {
+      _logNativeSmoke('START', 'create interpreter options');
+    }
     final options = InterpreterOptions()..threads = _backendConfig.threads;
+    if (_traceNativeSmoke) {
+      _logNativeSmoke('PASS', 'create interpreter options');
+    }
     Delegate? delegate;
 
     try {
+      if (_traceNativeSmoke) {
+        _logNativeSmoke('START', 'configure native delegate');
+      }
       delegate = _createDelegateFor(_backendConfig, options);
+      if (_traceNativeSmoke) {
+        _logNativeSmoke('PASS', 'configure native delegate');
+      }
       final modelBuffer = _modelBuffer;
+      // tflite_flutter 0.11.0 creates and allocates tensors in one constructor.
+      if (_traceNativeSmoke) {
+        _logNativeSmoke('START', 'create interpreter and allocate tensors');
+      }
       final interpreter = modelBuffer == null
           ? await Interpreter.fromAsset(
               AppConstants.modelAssetPath,
               options: options,
             )
           : Interpreter.fromBuffer(modelBuffer, options: options);
+      if (_traceNativeSmoke) {
+        _logNativeSmoke('PASS', 'create interpreter and allocate tensors');
+      }
       options.delete();
       return _InterpreterRuntime(interpreter: interpreter, delegate: delegate);
     } catch (_) {
@@ -324,11 +380,13 @@ class ModelService {
     File imageFile, {
     required bool collectMetrics,
   }) async {
+    if (_traceNativeSmoke) _logNativeSmoke('START', 'load photo model asset');
     final bytes = _photoModelBytes ??=
         _modelBuffer ??
         Uint8List.sublistView(
           await rootBundle.load(AppConstants.modelAssetPath),
         );
+    if (_traceNativeSmoke) _logNativeSmoke('PASS', 'load photo model asset');
     return compute(_inferPhoto, (
       bytes: bytes,
       path: imageFile.path,
@@ -355,14 +413,24 @@ class ModelService {
       maxDetections: request.limit,
     );
     try {
+      if (_traceNativeSmoke) {
+        service._logNativeSmoke('START', 'read photo file');
+      }
       final readTimer = request.collectMetrics ? (Stopwatch()..start()) : null;
       final bytes = await File(request.path).readAsBytes();
       readTimer?.stop();
+      if (_traceNativeSmoke) {
+        service._logNativeSmoke('PASS', 'read photo file');
+        service._logNativeSmoke('START', 'decode photo file');
+      }
       final decodeTimer = request.collectMetrics
           ? (Stopwatch()..start())
           : null;
       final image = service._decodeImageBytes(bytes);
       decodeTimer?.stop();
+      if (_traceNativeSmoke) {
+        service._logNativeSmoke('PASS', 'decode photo file');
+      }
       final initializationTimer = request.collectMetrics
           ? (Stopwatch()..start())
           : null;
@@ -428,14 +496,21 @@ class ModelService {
     final timings = _MutableModelPipelineTimings();
     final totalStopwatch = Stopwatch()..start();
 
+    if (_traceNativeSmoke) {
+      _logNativeSmoke('START', 'prepare input and tensor buffers');
+    }
     final workspace = _ensureTensorWorkspace();
     final preprocessed = _preprocessImage(
       decodedImage,
       workspace: workspace,
       timings: timings,
     );
+    if (_traceNativeSmoke) {
+      _logNativeSmoke('PASS', 'prepare input and tensor buffers');
+    }
     _runInference(workspace, timings);
 
+    if (_traceNativeSmoke) _logNativeSmoke('START', 'decode model outputs');
     final postprocessStopwatch = Stopwatch()..start();
     final candidateParsingStopwatch = Stopwatch()..start();
     final candidates = _parseSegmentationCandidates(
@@ -504,6 +579,7 @@ class ModelService {
     totalStopwatch.stop();
     timings.postprocessMicros = postprocessStopwatch.elapsedMicroseconds;
     timings.totalMicros = totalStopwatch.elapsedMicroseconds;
+    if (_traceNativeSmoke) _logNativeSmoke('PASS', 'decode model outputs');
 
     return ModelDetectionResult(
       detections: detections,
@@ -595,11 +671,20 @@ class ModelService {
     final interpreter = _interpreter!;
     // The validated, fixed-size interpreter is already allocated. Avoid the
     // plugin's ByteBuffer copyTo path, which writes output one byte at a time.
+    if (_traceNativeSmoke) _logNativeSmoke('START', 'copy input tensor');
     interpreter.getInputTensor(0).data = workspace.inputBuffer.buffer
         .asUint8List();
     final inputFinished = stopwatch.elapsedMicroseconds;
+    if (_traceNativeSmoke) {
+      _logNativeSmoke('PASS', 'copy input tensor');
+      _logNativeSmoke('START', 'Interpreter.invoke');
+    }
     interpreter.invoke();
     final invokeFinished = stopwatch.elapsedMicroseconds;
+    if (_traceNativeSmoke) {
+      _logNativeSmoke('PASS', 'Interpreter.invoke');
+      _logNativeSmoke('START', 'copy output tensors');
+    }
     for (final output in workspace.rawOutputs.entries) {
       // Native output is volatile: bulk-copy it before the next invocation.
       TensorBufferTransfer.copyExact(
@@ -608,10 +693,12 @@ class ModelService {
       );
     }
     stopwatch.stop();
+    if (_traceNativeSmoke) _logNativeSmoke('PASS', 'copy output tensors');
     timings.inferenceMicros = stopwatch.elapsedMicroseconds;
     timings.inputTensorMicros = inputFinished;
     timings.invokeMicros = invokeFinished - inputFinished;
     timings.outputTensorMicros = timings.inferenceMicros - invokeFinished;
+    if (_traceNativeSmoke) _validateNativeSmokeOutputs(workspace);
     return timings.inferenceMicros;
   }
 
