@@ -1,7 +1,7 @@
 # Detection safeguards
 
-The bundled model, RGB normalization, 640x640 letterbox preprocessing and
-three-class YOLO segmentation tensor layout are unchanged.
+The V8 hybrid model uses 224x224 RGB letterboxing and three-class YOLO segmentation.
+The same detection safeguards apply to photo and live inference.
 
 - Same-class NMS uses the existing 0.60 IoU limit.
 - Different-class predictions with box IoU above 0.85 are treated as duplicate

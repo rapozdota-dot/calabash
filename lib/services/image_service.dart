@@ -8,7 +8,7 @@ class ImageService {
   final ImagePicker _picker;
 
   /// Opens the native camera/gallery picker with a size limit for mobile memory use.
-  /// Returns null on cancellation; model-specific 640x640 letterboxing happens later.
+  /// Returns null on cancellation. Model preprocessing happens in the photo worker.
   Future<File?> pickImage({required ImageSource source}) async {
     final picked = await _picker.pickImage(
       source: source,

@@ -163,7 +163,7 @@ class _BottomLegibilityGradient extends StatelessWidget {
 class _SplashTypography extends StatelessWidget {
   const _SplashTypography();
 
-  /// Renders the app title and POWERED BY YOLOv8n-seg credit on the loading splash.
+  /// Renders the app title and model credit on the loading splash.
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
@@ -195,7 +195,7 @@ class _SplashTypography extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         Text(
-          'POWERED BY YOLOv8n-seg',
+          'POWERED BY HYBRID YOLOv8-seg',
           textAlign: TextAlign.center,
           maxLines: 1,
           style: textTheme.bodySmall?.copyWith(

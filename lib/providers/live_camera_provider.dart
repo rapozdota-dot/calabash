@@ -1003,7 +1003,8 @@ class LiveCameraProvider extends ChangeNotifier with WidgetsBindingObserver {
             frameId: frame.id,
             detectionCount: measuredResult?.detections.length,
             modelConfiguration:
-                'YOLOv8n-seg;input=${AppConstants.modelInputSize};'
+                '${AppConstants.modelName} ${AppConstants.modelVersion};'
+                'input=${AppConstants.modelInputSize};'
                 'confidence=${AppConstants.liveWeakConfidenceThreshold};'
                 'iou=${AppConstants.iouThreshold};max_detections=${AppConstants.liveMaxDetections};'
                 '${measuredResult?.backendInfo.label ?? ''};interpreter=persistent_worker',

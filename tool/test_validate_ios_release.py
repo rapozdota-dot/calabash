@@ -13,7 +13,7 @@ from validate_ios_release import validate_ipa, validate_model
 class ReleaseValidationTest(unittest.TestCase):
     EXPECTED_METADATA = {
         'task': 'segment', 'head': 'Segment', 'batch': 1,
-        'channels': 3, 'imgsz': [640, 640],
+        'channels': 3, 'imgsz': [224, 224], 'end2end': False,
         'names': {'0': 'Immature', '1': 'Mature', '2': 'Overmature'},
     }
 
@@ -21,15 +21,16 @@ class ReleaseValidationTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.model = Path(self.temp.name) / 'model.tflite'
-        self.write_model_description('Ultralytics YOLOv8n-seg fixture')
+        self.write_model_description('Ultralytics MobileNetV3Small_YOLOv8Seg_Architecture model fixture')
         self.model_sha = hashlib.sha256(self.model.read_bytes()).hexdigest()
 
-    def write_model_description(self, description):
+    def write_model_description(self, description, **overrides):
         self.model.write_bytes(b'\x08\x00\x00\x00TFL3')
         with zipfile.ZipFile(self.model, 'a') as archive:
             archive.writestr('metadata.json', json.dumps({
                 'description': description,
                 **self.EXPECTED_METADATA,
+                **overrides,
             }))
 
     def package(self, bundle='com.example.calabashMaturityDetection', build='42',
@@ -84,15 +85,19 @@ class ReleaseValidationTest(unittest.TestCase):
                 self.check(self.package(**fields))
 
     def test_wrong_class_order_is_rejected(self):
-        # Valid TFLite header alone cannot establish the application's label map.
-        self.model.write_bytes(b'\x08\x00\x00\x00TFL3')
-        with zipfile.ZipFile(self.model, 'a') as archive:
-            archive.writestr('metadata.json', json.dumps({
-                'description': 'YOLOv8n-seg', 'task': 'segment', 'head': 'Segment',
-                'batch': 1, 'channels': 3, 'imgsz': [640, 640],
-                'names': {'0': 'Mature', '1': 'Immature', '2': 'Overmature'},
-            }))
-        with self.assertRaises(ValueError):
+        self.write_model_description(
+            'Ultralytics MobileNetV3Small_YOLOv8Seg_Architecture model fixture',
+            names={'0': 'Mature', '1': 'Immature', '2': 'Overmature'},
+        )
+        with self.assertRaisesRegex(ValueError, 'Model metadata names'):
+            validate_model(self.model)
+
+    def test_previous_640_export_is_rejected(self):
+        self.write_model_description(
+            'Ultralytics MobileNetV3Small_YOLOv8Seg_Architecture model fixture',
+            imgsz=[640, 640],
+        )
+        with self.assertRaisesRegex(ValueError, 'Model metadata imgsz'):
             validate_model(self.model)
 
 

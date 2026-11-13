@@ -71,7 +71,7 @@ class SegmentationPostprocessor {
     return union > 0 ? intersection / union : 0;
   }
 
-  /// Maps 640-space box corners onto the lower-resolution prototype grid and clips the crop.
+  /// Maps input-space box corners onto the prototype grid and clips the crop.
   static ({int left, int top, int right, int bottom}) prototypeRegion(
     Rect modelBox,
     int modelSize,

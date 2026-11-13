@@ -6,7 +6,9 @@ class AppConstants {
   static const String appName = 'Calabash Maturity Detection';
   static const String modelAssetPath = 'assets/model/model.tflite';
 
-  static const int modelInputSize = 640;
+  static const String modelName = 'MobileNetV3-Small + YOLOv8-seg';
+  static const String modelVersion = 'v8';
+  static const int modelInputSize = 224;
   static const double confidenceThreshold = 0.45;
   static const double iouThreshold = 0.60;
   static const int maxDetections = 300;

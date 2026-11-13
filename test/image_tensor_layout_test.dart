@@ -1,140 +1,86 @@
 import 'dart:typed_data';
 
 import 'package:calabash_maturity_detection/services/image_tensor_layout.dart';
+import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 
 void main() {
-  test('accepts current NCHW and earlier NHWC model signatures', () {
-    for (final channels in [3, 32]) {
-      final size = channels == 3 ? 640 : 160;
+  test('packs normalized planar RGB at the 224-square input size', () {
+    final transform = LetterboxTransform(
+      sourceWidth: 224,
+      sourceHeight: 112,
+      inputSize: 224,
+    );
+    final image = img.Image(width: 224, height: 112)
+      ..setPixelRgb(0, 0, 255, 128, 64);
+    const plane = 224 * 224;
+    final tensor = Float32List(3 * plane);
+    transform.writeRgbImage(image: transform.resizeRgb(image), buffer: tensor);
+    final firstPixel = 56 * 224;
+    expect(transform.contentBounds, const Rect.fromLTWH(0, 56, 224, 112));
+    expect(tensor[firstPixel], 1);
+    expect(tensor[plane + firstPixel], closeTo(128 / 255, 1e-7));
+    expect(tensor[2 * plane + firstPixel], closeTo(64 / 255, 1e-7));
+    for (final channel in [0, 1, 2]) {
       expect(
-        ImageTensorLayout.fromShape(
-          [1, channels, size, size],
-          channels: channels,
-          height: size,
-          width: size,
-        ),
-        ImageTensorLayout.channelsFirst,
+        tensor[channel * plane + firstPixel - 1],
+        closeTo(114 / 255, 1e-7),
       );
-      expect(
-        ImageTensorLayout.fromShape(
-          [1, size, size, channels],
-          channels: channels,
-          height: size,
-          width: size,
-        ),
-        ImageTensorLayout.channelsLast,
-      );
+      expect(tensor[channel * plane + 168 * 224], closeTo(114 / 255, 1e-7));
     }
   });
 
-  test('rejects wrong resolution, channel count, and batch size', () {
-    for (final shape in [
-      [1, 3, 320, 320],
-      [1, 4, 640, 640],
-      [2, 3, 640, 640],
-      [640, 640, 3],
-    ]) {
-      expect(
-        () => ImageTensorLayout.fromShape(
-          shape,
-          channels: 3,
-          height: 640,
-          width: 640,
-        ),
-        throwsStateError,
-      );
-    }
-  });
-
-  test('packs RGB into separate planes or interleaved pixels with padding', () {
-    final image = img.Image(width: 2, height: 1)
-      ..setPixelRgb(0, 0, 255, 0, 0)
-      ..setPixelRgb(1, 0, 0, 128, 255);
-    const fill = 114.0 / 255.0;
-    final planar = Float32List(12);
-    final interleaved = Float32List(12);
-    for (final layout in ImageTensorLayout.values) {
-      final range = layout.writeRgbImage(
-        image: image,
-        buffer: layout == ImageTensorLayout.channelsFirst
-            ? planar
-            : interleaved,
-        inputSize: 2,
-        leftPad: 0,
-        topPad: 1,
-        collectRange: true,
-      );
-      expect(range.minValue, 0);
-      expect(range.maxValue, 1);
-    }
-    final expectedPlanar = [
-      fill,
-      fill,
-      1.0,
-      0.0,
-      fill,
-      fill,
-      0.0,
-      128 / 255,
-      fill,
-      fill,
-      0.0,
-      1.0,
-    ];
-    final expectedInterleaved = [
-      fill,
-      fill,
-      fill,
-      fill,
-      fill,
-      fill,
-      1.0,
-      0.0,
-      0.0,
-      0.0,
-      128 / 255,
-      1.0,
-    ];
-    for (var i = 0; i < 12; i++) {
-      expect(planar[i], closeTo(expectedPlanar[i], 1e-7));
-      expect(interleaved[i], closeTo(expectedInterleaved[i], 1e-7));
-    }
-  });
-
-  test('preserves prototype planes for either exporter layout', () {
-    final expected = Float32List.fromList([1, 2, 3, 4, 10, 20, 30, 40]);
-    for (final layout in ImageTensorLayout.values) {
-      final result = Float32List(8);
-      layout.copyToChannelFirst(
-        source: layout == ImageTensorLayout.channelsFirst
-            ? expected
-            : Float32List.fromList([1, 10, 2, 20, 3, 30, 4, 40]),
-        destination: result,
-        channels: 2,
-        height: 2,
-        width: 2,
-      );
-      expect(result, orderedEquals(expected));
-      // One coefficient per prototype channel, as used by mask reconstruction.
-      expect(List.generate(4, (i) => 2 * result[i] - result[4 + i]), [
-        -8,
-        -16,
-        -24,
-        -32,
-      ]);
-    }
-  });
-
-  test('rejects undersized buffers rather than silently corrupting input', () {
+  test('reverses asymmetric portrait padding using the rounded resize', () {
+    final transform = LetterboxTransform(
+      sourceWidth: 99,
+      sourceHeight: 201,
+      inputSize: 224,
+    );
+    expect(transform.resizedWidth, 110);
+    expect(transform.leftPad, 57);
     expect(
-      () => ImageTensorLayout.channelsFirst.writeRgbImage(
-        image: img.Image(width: 1, height: 1),
+      transform.toNormalizedSource(transform.contentBounds),
+      const Rect.fromLTWH(0, 0, 1, 1),
+    );
+    final oddPadding = LetterboxTransform(
+      sourceWidth: 100,
+      sourceHeight: 201,
+      inputSize: 224,
+    );
+    expect(oddPadding.resizedWidth, 111);
+    expect(oddPadding.leftPad, 56);
+    expect(oddPadding.contentBounds.right, 167);
+  });
+
+  test('resizes RGB with a pixel-center bilinear sample', () {
+    final transform = LetterboxTransform(
+      sourceWidth: 2,
+      sourceHeight: 2,
+      inputSize: 1,
+    );
+    final image = img.Image(width: 2, height: 2)
+      ..setPixelRgb(0, 0, 200, 100, 0)
+      ..setPixelRgb(1, 1, 80, 20, 40);
+    final pixel = transform.resizeRgb(image).getPixel(0, 0);
+    expect([pixel.r, pixel.g, pixel.b], [70, 30, 10]);
+  });
+
+  test('handles one-pixel axes and rejects invalid dimensions and buffers', () {
+    final transform = LetterboxTransform(
+      sourceWidth: 2000,
+      sourceHeight: 1,
+      inputSize: 224,
+    );
+    expect(transform.resizedHeight, 1);
+    expect(
+      () => LetterboxTransform(sourceWidth: 0, sourceHeight: 1, inputSize: 224),
+      throwsArgumentError,
+    );
+    expect(
+      () => transform.writeRgbImage(
+        image: img.Image(width: 224, height: 1),
         buffer: Float32List(3),
-        inputSize: 2,
-        leftPad: 0,
-        topPad: 0,
       ),
       throwsArgumentError,
     );

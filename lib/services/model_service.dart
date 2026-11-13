@@ -125,18 +125,15 @@ class TfliteBackendBenchmark {
   final String? errorMessage;
 }
 
-/// Offline inference for the bundled three-class YOLOv8n segmentation export.
-///
-/// YOLO currently performs localization, maturity classification, and mask
-/// prediction together. MobileNetV3 classification is not integrated yet.
-/// Tensor layouts come from the interpreter, not from a hardcoded NHWC assumption.
+/// Offline inference for the MobileNetV3-Small + YOLOv8 segmentation export.
+/// The backbone and segmentation head run together in one interpreter.
 /// One instance owns mutable reusable buffers and must process scans serially.
 class ModelService {
   static const int _classCount = 3;
   static const int _maskChannelCount = 32;
-  static const int _candidateCount = 8400;
-  static const int _protoHeight = 160;
-  static const int _protoWidth = 160;
+  static const int _candidateCount = 1029;
+  static const int _protoHeight = 56;
+  static const int _protoWidth = 56;
   static const int _protoPlaneSize = _protoHeight * _protoWidth;
   static const int _debugLogCount = 5;
   static const int _detectionChannelCount = 4 + _classCount + _maskChannelCount;
@@ -152,6 +149,18 @@ class ModelService {
     1,
     _detectionChannelCount,
     _candidateCount,
+  ];
+  static const List<int> _expectedInputShape = [
+    1,
+    3,
+    AppConstants.modelInputSize,
+    AppConstants.modelInputSize,
+  ];
+  static const List<int> _expectedProtoShape = [
+    1,
+    _maskChannelCount,
+    _protoHeight,
+    _protoWidth,
   ];
 
   ModelService({
@@ -172,8 +181,6 @@ class ModelService {
   Interpreter? _interpreter;
   Delegate? _delegate;
   Future<void>? _modelLoading;
-  ImageTensorLayout? _inputLayout;
-  ImageTensorLayout? _protoLayout;
   bool _didLogTensorShapes = false;
   int? _detectionOutputIndex;
   int? _protoOutputIndex;
@@ -187,7 +194,8 @@ class ModelService {
   TfliteBackendConfig get backendConfig => _backendConfig;
 
   String get photoConfigurationDescription =>
-      'YOLOv8n-seg;input=${AppConstants.modelInputSize};'
+      '${AppConstants.modelName} ${AppConstants.modelVersion};'
+      'input=${AppConstants.modelInputSize};'
       'confidence=$_confidenceThreshold;iou=${AppConstants.iouThreshold};'
       'max_detections=$_maxDetections;CPU;threads=2;interpreter=new_per_photo';
 
@@ -491,7 +499,7 @@ class ModelService {
   }
 
   /// Orchestrates letterbox -> TFLite -> candidates -> class-aware NMS -> masks -> UI detections.
-  /// Only surviving candidates reconstruct masks, avoiding expensive work for all 8400 anchors.
+  /// Only surviving candidates reconstruct masks.
   ModelDetectionResult _detectFruitsFromDecodedImage(img.Image decodedImage) {
     final timings = _MutableModelPipelineTimings();
     final totalStopwatch = Stopwatch()..start();
@@ -510,12 +518,51 @@ class ModelService {
     }
     _runInference(workspace, timings);
 
+    final detections = _decodeOutputs(
+      detectionOutput: workspace.detectionOutputBuffer,
+      prototypes: workspace.protoOutputBuffer,
+      maskLogits: workspace.maskLogitsBuffer,
+      metadata: preprocessed,
+      timings: timings,
+    );
+    totalStopwatch.stop();
+    timings.totalMicros = totalStopwatch.elapsedMicroseconds;
+    return ModelDetectionResult(
+      detections: detections,
+      timings: timings.toImmutable(),
+    );
+  }
+
+  @visibleForTesting
+  List<Detection> decodeOutputsForTest({
+    required Float32List detectionOutput,
+    required Float32List prototypes,
+    required LetterboxTransform letterbox,
+  }) => _decodeOutputs(
+    detectionOutput: detectionOutput,
+    prototypes: prototypes,
+    maskLogits: Float32List(_protoPlaneSize),
+    metadata: letterbox,
+    timings: _MutableModelPipelineTimings(),
+  );
+
+  List<Detection> _decodeOutputs({
+    required Float32List detectionOutput,
+    required Float32List prototypes,
+    required Float32List maskLogits,
+    required LetterboxTransform metadata,
+    required _MutableModelPipelineTimings timings,
+  }) {
+    if (detectionOutput.length != _detectionChannelCount * _candidateCount ||
+        prototypes.length != _maskChannelCount * _protoPlaneSize) {
+      throw ArgumentError('Output buffer sizes do not match the V8 model.');
+    }
     if (_traceNativeSmoke) _logNativeSmoke('START', 'decode model outputs');
     final postprocessStopwatch = Stopwatch()..start();
     final candidateParsingStopwatch = Stopwatch()..start();
     final candidates = _parseSegmentationCandidates(
-      detectionOutput: workspace.detectionOutputBuffer,
-      metadata: preprocessed.metadata,
+      detectionOutput: detectionOutput,
+      metadata: metadata,
     );
     candidateParsingStopwatch.stop();
     timings.candidateParsingMicros =
@@ -535,33 +582,20 @@ class ModelService {
 
     var finalCandidates = nmsCandidates;
     if (nmsCandidates.isNotEmpty) {
-      final protoStopwatch = Stopwatch()..start();
-      // Current exports are already channel-first. No 3 MB copy per frame.
-      final prototypes = _protoLayout == ImageTensorLayout.channelsFirst
-          ? workspace.protoOutputBuffer
-          : workspace.protoChannelFirstBuffer;
-      if (_protoLayout != ImageTensorLayout.channelsFirst) {
-        _copyProtoTensor(
-          rawProto: workspace.protoOutputBuffer,
-          channelFirstProto: workspace.protoChannelFirstBuffer,
-        );
-      }
-      protoStopwatch.stop();
-      timings.protoExtractionMicros = protoStopwatch.elapsedMicroseconds;
-
+      // Prototype planes are already contiguous in the output buffer.
       final maskStopwatch = Stopwatch()..start();
       finalCandidates = _attachMasksAndFilterCandidates(
         candidates: nmsCandidates,
         protoTensor: prototypes,
-        maskLogitsBuffer: workspace.maskLogitsBuffer,
-        metadata: preprocessed.metadata,
+        maskLogitsBuffer: maskLogits,
+        metadata: metadata,
       );
       maskStopwatch.stop();
       timings.maskReconstructionMicros = maskStopwatch.elapsedMicroseconds;
     }
 
     final detections = finalCandidates
-        .map((candidate) => candidate.toDetection(preprocessed.metadata))
+        .map((candidate) => candidate.toDetection(metadata))
         .toList(growable: false);
 
     if (_shouldVerboseLog) {
@@ -576,60 +610,35 @@ class ModelService {
     }
 
     postprocessStopwatch.stop();
-    totalStopwatch.stop();
     timings.postprocessMicros = postprocessStopwatch.elapsedMicroseconds;
-    timings.totalMicros = totalStopwatch.elapsedMicroseconds;
     if (_traceNativeSmoke) _logNativeSmoke('PASS', 'decode model outputs');
-
-    return ModelDetectionResult(
-      detections: detections,
-      timings: timings.toImmutable(),
-    );
+    return detections;
   }
 
-  /// Fits the image proportionally inside 640x640 without stretching its fruit shapes.
+  /// Fits the image proportionally inside the model canvas.
   /// Centers the resized image in RGB-114 padding, writes normalized float32 RGB, and saves
   /// scale/padding metadata so both boxes and masks can be remapped to the original image.
-  _PreprocessedImage _preprocessImage(
+  LetterboxTransform _preprocessImage(
     img.Image decodedImage, {
     required _ModelTensorWorkspace workspace,
     required _MutableModelPipelineTimings timings,
   }) {
     final preprocessStopwatch = Stopwatch()..start();
-    final originalWidth = decodedImage.width;
-    final originalHeight = decodedImage.height;
-    final inputSize = AppConstants.modelInputSize;
-    final gain = math.min(
-      inputSize / originalWidth,
-      inputSize / originalHeight,
+    final letterbox = LetterboxTransform(
+      sourceWidth: decodedImage.width,
+      sourceHeight: decodedImage.height,
+      inputSize: AppConstants.modelInputSize,
     );
-
-    final resizedWidth = (originalWidth * gain).round();
-    final resizedHeight = (originalHeight * gain).round();
-    final padWidth = inputSize - resizedWidth;
-    final padHeight = inputSize - resizedHeight;
-    final leftPad = ((padWidth / 2) - 0.1).round();
-    final topPad = ((padHeight / 2) - 0.1).round();
-    final rightPad = inputSize - resizedWidth - leftPad;
-    final bottomPad = inputSize - resizedHeight - topPad;
 
     final resizeStopwatch = Stopwatch()..start();
-    final resized = img.copyResize(
-      decodedImage,
-      width: resizedWidth,
-      height: resizedHeight,
-      interpolation: img.Interpolation.linear,
-    );
+    final resized = letterbox.resizeRgb(decodedImage);
     resizeStopwatch.stop();
     timings.resizeLetterboxMicros = resizeStopwatch.elapsedMicroseconds;
 
     final tensorStopwatch = Stopwatch()..start();
-    final range = _inputLayout!.writeRgbImage(
+    final range = letterbox.writeRgbImage(
       image: resized,
       buffer: workspace.inputBuffer,
-      inputSize: inputSize,
-      leftPad: leftPad,
-      topPad: topPad,
       collectRange: _shouldVerboseLog,
     );
 
@@ -639,25 +648,15 @@ class ModelService {
     if (_shouldVerboseLog) {
       debugPrint(
         'Preprocess: shape=${_interpreter!.getInputTensor(0).shape} '
-        'layout=$_inputLayout '
+        'layout=NCHW '
         'range=[${range.minValue.toStringAsFixed(4)}, ${range.maxValue.toStringAsFixed(4)}] '
-        'gain=${gain.toStringAsFixed(4)} '
-        'pad=($leftPad,$topPad,$rightPad,$bottomPad)',
+        'content=${letterbox.contentBounds}',
       );
     }
     preprocessStopwatch.stop();
     timings.preprocessMicros = preprocessStopwatch.elapsedMicroseconds;
 
-    return _PreprocessedImage(
-      inputTensor: workspace.inputTensor,
-      metadata: _PreprocessMetadata(
-        originalWidth: originalWidth.toDouble(),
-        originalHeight: originalHeight.toDouble(),
-        gain: gain,
-        leftPad: leftPad.toDouble(),
-        topPad: topPad.toDouble(),
-      ),
-    );
+    return letterbox;
   }
 
   /// Keeps the legacy call-path duration while exposing its three sequential parts.
@@ -689,7 +688,7 @@ class ModelService {
       // Native output is volatile: bulk-copy it before the next invocation.
       TensorBufferTransfer.copyExact(
         interpreter.getOutputTensor(output.key).data,
-        output.value as ByteBuffer,
+        output.value,
       );
     }
     stopwatch.stop();
@@ -714,64 +713,29 @@ class ModelService {
     return workspace;
   }
 
-  /// Allocates float32 buffers using the interpreter's validated tensor shapes.
-  /// A prototype-transpose buffer is needed only for NHWC exports; NCHW planes can be read directly.
+  /// Allocates reusable float32 buffers after validating the interpreter's signature.
   _ModelTensorWorkspace _createTensorWorkspace() {
-    final inputBuffer = Float32List(_inputTensorElementCount);
-    final rawOutputs = <int, Object>{};
-    final shapes = <int, List<int>>{};
-    Float32List? detectionOutputBuffer;
-    Float32List? protoOutputBuffer;
-
-    for (final index in [_detectionOutputIndex!, _protoOutputIndex!]) {
-      final shape = List<int>.from(_interpreter!.getOutputTensor(index).shape);
-      shapes[index] = shape;
-      final flatBuffer = Float32List(_elementCount(shape));
-      rawOutputs[index] = flatBuffer.buffer;
-
-      if (index == _detectionOutputIndex) {
-        detectionOutputBuffer = flatBuffer;
-      } else if (index == _protoOutputIndex) {
-        protoOutputBuffer = flatBuffer;
-      }
-    }
-
-    if (_shouldVerboseLog) {
-      debugPrint(
-        'Prepared output buffers: '
-        '${shapes.entries.map((entry) => '${entry.key}:${entry.value}').join(', ')}',
-      );
-    }
-
-    if (detectionOutputBuffer == null || protoOutputBuffer == null) {
-      throw StateError(
-        'Model output buffers could not be prepared for YOLOv8 segmentation.',
-      );
-    }
-
+    final detections = Float32List(_detectionChannelCount * _candidateCount);
+    final prototypes = Float32List(_maskChannelCount * _protoPlaneSize);
     return _ModelTensorWorkspace(
-      inputBuffer: inputBuffer,
-      inputTensor: inputBuffer.buffer,
-      rawOutputs: rawOutputs,
-      detectionOutputBuffer: detectionOutputBuffer,
-      protoOutputBuffer: protoOutputBuffer,
-      // NCHW exports already have contiguous prototype planes.
-      protoChannelFirstBuffer: Float32List(
-        _protoLayout == ImageTensorLayout.channelsLast
-            ? _maskChannelCount * _protoPlaneSize
-            : 0,
-      ),
+      inputBuffer: Float32List(_inputTensorElementCount),
+      rawOutputs: {
+        _detectionOutputIndex!: detections.buffer,
+        _protoOutputIndex!: prototypes.buffer,
+      },
+      detectionOutputBuffer: detections,
+      protoOutputBuffer: prototypes,
       maskLogitsBuffer: Float32List(_protoPlaneSize),
     );
   }
 
-  /// Reads [1,39,8400] as 39 channel planes, not 8400 rows of 39 values.
+  /// Reads [1,39,1029] as 39 contiguous channel planes.
   /// Channels 0-3 are xywh, 4-6 are the three class scores, and 7-38 are mask coefficients.
   /// Selects the best of classes 0-2, applies the confidence threshold, rejects invalid
   /// geometry/scores, and retains coefficients separately; there is no separate objectness channel.
   List<_SegmentationCandidate> _parseSegmentationCandidates({
     required Float32List detectionOutput,
-    required _PreprocessMetadata metadata,
+    required LetterboxTransform metadata,
   }) {
     final candidates = <_SegmentationCandidate>[];
     final collectDebugCandidates = _shouldVerboseLog;
@@ -793,7 +757,7 @@ class ModelService {
           channel: 4 + classIndex,
           anchor: anchor,
         );
-        if (score > bestScore) {
+        if (score.isFinite && score >= 0 && score <= 1 && score > bestScore) {
           bestScore = score;
           bestClass = classIndex;
         }
@@ -810,10 +774,7 @@ class ModelService {
         );
       }
 
-      if (!_isValidClassIndex(bestClass) ||
-          !bestScore.isFinite ||
-          bestScore > 1 ||
-          bestScore <= _confidenceThreshold) {
+      if (!_isValidClassIndex(bestClass) || bestScore <= _confidenceThreshold) {
         continue;
       }
 
@@ -844,16 +805,8 @@ class ModelService {
         width: width,
         height: height,
       );
-      final clippedModelBox = _clipBoxToModel(box);
-      final originalBox = _scaleBoxToOriginal(
-        modelSpaceBox: clippedModelBox,
-        metadata: metadata,
-      );
-
-      if (clippedModelBox.width <= 0 ||
-          clippedModelBox.height <= 0 ||
-          originalBox.width <= 0 ||
-          originalBox.height <= 0) {
+      final clippedModelBox = box.intersect(metadata.contentBounds);
+      if (clippedModelBox.isEmpty) {
         invalidBoxes++;
         continue;
       }
@@ -870,7 +823,6 @@ class ModelService {
 
       final candidate = _SegmentationCandidate(
         modelSpaceBox: clippedModelBox,
-        originalSpaceBox: originalBox,
         classIndex: bestClass,
         confidence: bestScore,
         maskCoefficients: maskCoefficients,
@@ -907,8 +859,7 @@ class ModelService {
     return candidates;
   }
 
-  /// Converts this bundled export's normalized center-x/center-y/width/height to 640-space corners.
-  /// A replacement export must be verified before assuming it uses the same coordinate units.
+  /// Converts the export's normalized center/size values into input-pixel corners.
   Rect _decodeModelSpaceBox({
     required double cx,
     required double cy,
@@ -929,43 +880,13 @@ class ModelService {
     );
   }
 
-  /// Clamps decoded corners to the model canvas before remapping or reconstructing masks.
-  Rect _clipBoxToModel(Rect box) {
-    final modelSize = AppConstants.modelInputSize.toDouble();
-    return Rect.fromLTRB(
-      _clamp(box.left, 0.0, modelSize),
-      _clamp(box.top, 0.0, modelSize),
-      _clamp(box.right, 0.0, modelSize),
-      _clamp(box.bottom, 0.0, modelSize),
-    );
-  }
-
-  /// Reverses letterboxing: subtract left/top padding, then divide by the resize gain.
-  /// Clamps the result to original-image pixels to exclude padded areas.
-  Rect _scaleBoxToOriginal({
-    required Rect modelSpaceBox,
-    required _PreprocessMetadata metadata,
-  }) {
-    final left = (modelSpaceBox.left - metadata.leftPad) / metadata.gain;
-    final top = (modelSpaceBox.top - metadata.topPad) / metadata.gain;
-    final right = (modelSpaceBox.right - metadata.leftPad) / metadata.gain;
-    final bottom = (modelSpaceBox.bottom - metadata.topPad) / metadata.gain;
-
-    return Rect.fromLTRB(
-      _clamp(left, 0.0, metadata.originalWidth),
-      _clamp(top, 0.0, metadata.originalHeight),
-      _clamp(right, 0.0, metadata.originalWidth),
-      _clamp(bottom, 0.0, metadata.originalHeight),
-    );
-  }
-
   /// Combines each NMS survivor's coefficients with prototypes and checks foreground support.
   /// Rejects unsupported/empty masks as a sanity filter, not a guarantee against model false positives.
   List<_SegmentationCandidate> _attachMasksAndFilterCandidates({
     required List<_SegmentationCandidate> candidates,
     required Float32List protoTensor,
     required Float32List maskLogitsBuffer,
-    required _PreprocessMetadata metadata,
+    required LetterboxTransform metadata,
   }) {
     if (candidates.isEmpty) {
       return candidates;
@@ -999,7 +920,7 @@ class ModelService {
           maskLogits: maskLogitsBuffer,
           metadata: metadata,
         );
-        if (mask != null && !mask.isEmpty) {
+        if (!mask.isEmpty) {
           kept.add(candidate.copyWith(visualMask: mask));
         } else {
           droppedByMask++;
@@ -1016,184 +937,113 @@ class ModelService {
     return kept;
   }
 
-  /// Samples prototype logits in the original fruit region into a compact binary grid.
-  /// Forward-maps original pixels through letterbox metadata, thresholds logits, and smooths
-  /// the grid; normalized bounds let the painter align it at any displayed image size.
-  SegmentationMask? _buildDisplayMask({
+  /// Bilinearly samples cropped prototype logits before thresholding. Sampling
+  /// within the unpadded box keeps the binary grid aligned to the source image.
+  SegmentationMask _buildDisplayMask({
     required _SegmentationCandidate candidate,
     required Float32List maskLogits,
-    required _PreprocessMetadata metadata,
+    required LetterboxTransform metadata,
   }) {
-    final originalBox = candidate.originalSpaceBox;
-    if (originalBox.width <= 0 || originalBox.height <= 0) {
-      return null;
-    }
-
+    final box = candidate.modelSpaceBox;
+    final normalizedBox = metadata.toNormalizedSource(box);
+    final aspect =
+        (normalizedBox.width * metadata.sourceWidth) /
+        (normalizedBox.height * metadata.sourceHeight);
     const maxMaskSide = 72;
     const minMaskSide = 18;
-    final aspect = originalBox.width / originalBox.height;
-    final maskWidth = aspect >= 1
-        ? maxMaskSide
-        : _clampInt((maxMaskSide * aspect).round(), minMaskSide, maxMaskSide);
-    final maskHeight = aspect >= 1
-        ? _clampInt((maxMaskSide / aspect).round(), minMaskSide, maxMaskSide)
-        : maxMaskSide;
+    final maskWidth = (maxMaskSide * aspect).round().clamp(
+      minMaskSide,
+      maxMaskSide,
+    );
+    final maskHeight = (maxMaskSide / aspect).round().clamp(
+      minMaskSide,
+      maxMaskSide,
+    );
+    const scaleX = _protoWidth / AppConstants.modelInputSize;
+    const scaleY = _protoHeight / AppConstants.modelInputSize;
 
     final pixels = Uint8List(maskWidth * maskHeight);
-    var activeCount = 0;
-
     for (var y = 0; y < maskHeight; y++) {
-      final originalY =
-          originalBox.top + ((y + 0.5) / maskHeight) * originalBox.height;
-      final modelY = (originalY * metadata.gain) + metadata.topPad;
-      final protoY = _clampInt(
-        (modelY / AppConstants.modelInputSize * _protoHeight).floor(),
-        0,
-        _protoHeight - 1,
-      );
-
+      final py =
+          ((box.top + (y + 0.5) * box.height / maskHeight) * scaleY - 0.5)
+              .clamp(0.0, _protoHeight - 1.0);
+      final y0 = py.floor();
+      final y1 = math.min(y0 + 1, _protoHeight - 1);
+      final row0 = y0 * _protoWidth;
+      final row1 = y1 * _protoWidth;
+      final fy = py - y0;
       for (var x = 0; x < maskWidth; x++) {
-        final originalX =
-            originalBox.left + ((x + 0.5) / maskWidth) * originalBox.width;
-        final modelX = (originalX * metadata.gain) + metadata.leftPad;
-        final protoX = _clampInt(
-          (modelX / AppConstants.modelInputSize * _protoWidth).floor(),
-          0,
-          _protoWidth - 1,
-        );
-
-        if (maskLogits[(protoY * _protoWidth) + protoX] >
-            AppConstants.maskLogitThreshold) {
-          pixels[(y * maskWidth) + x] = 1;
-          activeCount++;
+        final px =
+            ((box.left + (x + 0.5) * box.width / maskWidth) * scaleX - 0.5)
+                .clamp(0.0, _protoWidth - 1.0);
+        final x0 = px.floor();
+        final x1 = math.min(x0 + 1, _protoWidth - 1);
+        final fx = px - x0;
+        final top =
+            maskLogits[row0 + x0] * (1 - fx) + maskLogits[row0 + x1] * fx;
+        final bottom =
+            maskLogits[row1 + x0] * (1 - fx) + maskLogits[row1 + x1] * fx;
+        if (top * (1 - fy) + bottom * fy > AppConstants.maskLogitThreshold) {
+          pixels[y * maskWidth + x] = 1;
         }
       }
     }
 
-    if (activeCount == 0) {
-      return null;
-    }
-
     return SegmentationMask(
-      bounds: Rect.fromLTWH(
-        (originalBox.left / metadata.originalWidth).clamp(0.0, 1.0),
-        (originalBox.top / metadata.originalHeight).clamp(0.0, 1.0),
-        (originalBox.width / metadata.originalWidth).clamp(0.0, 1.0),
-        (originalBox.height / metadata.originalHeight).clamp(0.0, 1.0),
-      ),
+      bounds: normalizedBox,
       width: maskWidth,
       height: maskHeight,
-      pixels: SegmentationPostprocessor.smoothMask(
-        pixels,
-        maskWidth,
-        maskHeight,
-      ),
+      pixels: pixels,
     );
   }
 
-  /// Converts NHWC prototypes to contiguous channel planes required by mask reconstruction.
-  void _copyProtoTensor({
-    required Float32List rawProto,
-    required Float32List channelFirstProto,
+  /// Resolves the two exact V8 FP32 outputs by shape regardless of output order.
+  @visibleForTesting
+  static ({int detection, int prototypes}) validateModelSignature({
+    required List<({List<int> shape, TensorType type})> inputs,
+    required List<({List<int> shape, TensorType type})> outputs,
   }) {
-    _protoLayout!.copyToChannelFirst(
-      source: rawProto,
-      destination: channelFirstProto,
-      channels: _maskChannelCount,
-      height: _protoHeight,
-      width: _protoWidth,
-    );
-
-    if (_shouldVerboseLog) {
-      debugPrint(
-        'Raw output tensors: detection=$_expectedDetectionShape '
-        'proto=${_interpreter!.getOutputTensor(_protoOutputIndex!).shape} '
-        'layout=$_protoLayout',
+    if (inputs.length != 1 ||
+        !listEquals(inputs.single.shape, _expectedInputShape) ||
+        inputs.single.type != TensorType.float32) {
+      throw StateError(
+        'Expected FP32 input $_expectedInputShape, found $inputs.',
       );
     }
+
+    final detection = outputs.indexWhere(
+      (tensor) =>
+          listEquals(tensor.shape, _expectedDetectionShape) &&
+          tensor.type == TensorType.float32,
+    );
+    final prototypes = outputs.indexWhere(
+      (tensor) =>
+          listEquals(tensor.shape, _expectedProtoShape) &&
+          tensor.type == TensorType.float32,
+    );
+    if (outputs.length != 2 || detection < 0 || prototypes < 0) {
+      throw StateError(
+        'Expected FP32 outputs $_expectedDetectionShape and $_expectedProtoShape, '
+        'found $outputs.',
+      );
+    }
+    return (detection: detection, prototypes: prototypes);
   }
 
-  /// Reads actual interpreter shapes and requires float32 input/output tensors.
-  /// Accepts 640x640 RGB in NCHW/NHWC, detections [1,39,8400], and 32 prototypes
-  /// at 160x160 in either layout; resolves output indices by shape, not assumed ordering.
   void _validateModelSignature() {
-    if (_interpreter == null) {
-      return;
-    }
-
-    final inputTensors = _interpreter!.getInputTensors();
-    if (inputTensors.length != 1) {
-      throw StateError(
-        'Expected 1 input tensor, found ${inputTensors.length}.',
-      );
-    }
-
-    final inputTensor = inputTensors.first;
-    _inputLayout = ImageTensorLayout.fromShape(
-      inputTensor.shape,
-      channels: 3,
-      height: AppConstants.modelInputSize,
-      width: AppConstants.modelInputSize,
+    final interpreter = _interpreter!;
+    final signature = validateModelSignature(
+      inputs: interpreter
+          .getInputTensors()
+          .map((tensor) => (shape: tensor.shape, type: tensor.type))
+          .toList(),
+      outputs: interpreter
+          .getOutputTensors()
+          .map((tensor) => (shape: tensor.shape, type: tensor.type))
+          .toList(),
     );
-    if (inputTensor.type != TensorType.float32) {
-      throw StateError(
-        'Unexpected input tensor type ${inputTensor.type}. '
-        'Expected ${TensorType.float32}.',
-      );
-    }
-
-    final outputTensors = _interpreter!.getOutputTensors();
-    if (outputTensors.length < 2) {
-      throw StateError(
-        'Expected 2 output tensors for YOLOv8 segmentation, '
-        'found ${outputTensors.length}.',
-      );
-    }
-
-    for (var index = 0; index < outputTensors.length; index++) {
-      final tensor = outputTensors[index];
-      if (_sameShape(tensor.shape, _expectedDetectionShape)) {
-        _detectionOutputIndex = index;
-      } else if (_sameShape(tensor.shape, [
-            1,
-            _protoHeight,
-            _protoWidth,
-            _maskChannelCount,
-          ]) ||
-          _sameShape(tensor.shape, [
-            1,
-            _maskChannelCount,
-            _protoHeight,
-            _protoWidth,
-          ])) {
-        _protoOutputIndex = index;
-        _protoLayout = ImageTensorLayout.fromShape(
-          tensor.shape,
-          channels: _maskChannelCount,
-          height: _protoHeight,
-          width: _protoWidth,
-        );
-      }
-    }
-
-    if (_detectionOutputIndex == null || _protoOutputIndex == null) {
-      throw StateError(
-        'Unexpected output tensor shapes: '
-        '${outputTensors.map((tensor) => tensor.shape).toList()}. '
-        'Expected detection=$_expectedDetectionShape '
-        'and proto=[1,160,160,32] or [1,32,160,160].',
-      );
-    }
-
-    final detectionTensor = outputTensors[_detectionOutputIndex!];
-    final protoTensor = outputTensors[_protoOutputIndex!];
-    if (detectionTensor.type != TensorType.float32 ||
-        protoTensor.type != TensorType.float32) {
-      throw StateError(
-        'Unexpected output tensor types: '
-        'det=${detectionTensor.type}, proto=${protoTensor.type}.',
-      );
-    }
+    _detectionOutputIndex = signature.detection;
+    _protoOutputIndex = signature.prototypes;
   }
 
   /// Prints tensor names, dimensions, and dtypes once per load in debug mode.
@@ -1221,7 +1071,7 @@ class ModelService {
     }
   }
 
-  /// Prints a small confidence-ranked candidate sample rather than all 8400 anchors.
+  /// Prints a small confidence-ranked candidate sample rather than all candidates.
   void _logDebugCandidates({
     required String label,
     required List<_DebugCandidate> candidates,
@@ -1272,7 +1122,7 @@ class ModelService {
   /// Formats an anchor's score and validates its class before producing a debug label.
   String _formatDebugCandidate(_DebugCandidate candidate) {
     final className = _isValidClassIndex(candidate.classIndex)
-        ? _classFromIndex(candidate.classIndex).label
+        ? _SegmentationCandidate.maturityClasses[candidate.classIndex].label
         : 'Invalid';
     return '#${candidate.anchor} $className ${candidate.confidence.toStringAsFixed(3)}';
   }
@@ -1282,63 +1132,12 @@ class ModelService {
     return classIndex >= 0 && classIndex < _classCount;
   }
 
-  /// Uses dataset order: 0 Immature, 1 Mature, 2 Overmature; invalid values become Unknown.
-  MaturityClass _classFromIndex(int classIndex) {
-    switch (classIndex) {
-      case 0:
-        return MaturityClass.immature;
-      case 1:
-        return MaturityClass.mature;
-      case 2:
-        return MaturityClass.overmature;
-      default:
-        return MaturityClass.unknown;
-    }
-  }
-
-  /// Multiplies tensor dimensions to allocate the exact flat float32 buffer length.
-  int _elementCount(List<int> shape) {
-    return shape.fold<int>(1, (product, value) => product * value);
-  }
-
-  /// Reads a channel-first anchor value at channel * 8400 + anchor with bounds guards.
-  /// Using anchor * 39 + channel here would mix coordinates, class scores, and mask coefficients.
+  /// Channel-major indexing for the fixed V8 detection tensor.
   double _detectionValueAt(
     Float32List detectionOutput, {
     required int channel,
     required int anchor,
-  }) {
-    if (channel < 0 ||
-        channel >= _detectionChannelCount ||
-        anchor < 0 ||
-        anchor >= _candidateCount) {
-      return 0.0;
-    }
-    return detectionOutput[(channel * _candidateCount) + anchor];
-  }
-
-  /// Checks dimension-by-dimension equality when identifying the model's outputs.
-  bool _sameShape(List<int> a, List<int> b) {
-    if (a.length != b.length) {
-      return false;
-    }
-    for (var index = 0; index < a.length; index++) {
-      if (a[index] != b[index]) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  /// Clamps floating-point coordinates to safe image/model bounds.
-  double _clamp(double value, double min, double max) {
-    return (value.clamp(min, max) as num).toDouble();
-  }
-
-  /// Clamps integer prototype/grid indices to valid sampling bounds.
-  int _clampInt(int value, int min, int max) {
-    return value.clamp(min, max);
-  }
+  }) => detectionOutput[channel * _candidateCount + anchor];
 
   /// Closes the interpreter and delegate and drops cached tensor buffers/layout metadata.
   void dispose() {
@@ -1349,8 +1148,6 @@ class ModelService {
     _detectionOutputIndex = null;
     _protoOutputIndex = null;
     _tensorWorkspace = null;
-    _inputLayout = null;
-    _protoLayout = null;
     _didLogTensorShapes = false;
   }
 }
@@ -1369,28 +1166,17 @@ class _InterpreterRuntime {
 class _ModelTensorWorkspace {
   const _ModelTensorWorkspace({
     required this.inputBuffer,
-    required this.inputTensor,
     required this.rawOutputs,
     required this.detectionOutputBuffer,
     required this.protoOutputBuffer,
-    required this.protoChannelFirstBuffer,
     required this.maskLogitsBuffer,
   });
 
   final Float32List inputBuffer;
-  final Object inputTensor;
-  final Map<int, Object> rawOutputs;
+  final Map<int, ByteBuffer> rawOutputs;
   final Float32List detectionOutputBuffer;
   final Float32List protoOutputBuffer;
-  final Float32List protoChannelFirstBuffer;
   final Float32List maskLogitsBuffer;
-}
-
-class _PreprocessedImage {
-  const _PreprocessedImage({required this.inputTensor, required this.metadata});
-
-  final Object inputTensor;
-  final _PreprocessMetadata metadata;
 }
 
 class _MutableModelPipelineTimings {
@@ -1428,28 +1214,10 @@ class _MutableModelPipelineTimings {
   }
 }
 
-/// Original dimensions and letterbox transform needed to undo padding/resizing.
-class _PreprocessMetadata {
-  const _PreprocessMetadata({
-    required this.originalWidth,
-    required this.originalHeight,
-    required this.gain,
-    required this.leftPad,
-    required this.topPad,
-  });
-
-  final double originalWidth;
-  final double originalHeight;
-  final double gain;
-  final double leftPad;
-  final double topPad;
-}
-
 /// Internal prediction before conversion to UI coordinates and final mask filtering.
 class _SegmentationCandidate {
   const _SegmentationCandidate({
     required this.modelSpaceBox,
-    required this.originalSpaceBox,
     required this.classIndex,
     required this.confidence,
     required this.maskCoefficients,
@@ -1457,7 +1225,6 @@ class _SegmentationCandidate {
   });
 
   final Rect modelSpaceBox;
-  final Rect originalSpaceBox;
   final int classIndex;
   final double confidence;
   final Float32List maskCoefficients;
@@ -1467,7 +1234,6 @@ class _SegmentationCandidate {
   _SegmentationCandidate copyWith({SegmentationMask? visualMask}) {
     return _SegmentationCandidate(
       modelSpaceBox: modelSpaceBox,
-      originalSpaceBox: originalSpaceBox,
       classIndex: classIndex,
       confidence: confidence,
       maskCoefficients: maskCoefficients,
@@ -1475,36 +1241,19 @@ class _SegmentationCandidate {
     );
   }
 
-  /// Normalizes original-image corners to 0-1 UI bounds and attaches the fixed stage and mask.
-  Detection toDetection(_PreprocessMetadata metadata) {
-    final normalizedBox = Rect.fromLTWH(
-      (originalSpaceBox.left / metadata.originalWidth).clamp(0.0, 1.0),
-      (originalSpaceBox.top / metadata.originalHeight).clamp(0.0, 1.0),
-      (originalSpaceBox.width / metadata.originalWidth).clamp(0.0, 1.0),
-      (originalSpaceBox.height / metadata.originalHeight).clamp(0.0, 1.0),
-    );
+  /// Verified from both V8's embedded metadata and its dataset YAML.
+  static const maturityClasses = [
+    MaturityClass.immature,
+    MaturityClass.mature,
+    MaturityClass.overmature,
+  ];
 
-    return Detection(
-      boundingBox: normalizedBox,
-      maturityClass: _classIndexToMaturityClass(classIndex),
-      confidence: confidence,
-      mask: visualMask,
-    );
-  }
-
-  /// Maps only trained IDs to stages, using Unknown defensively for invalid values.
-  static MaturityClass _classIndexToMaturityClass(int classIndex) {
-    switch (classIndex) {
-      case 0:
-        return MaturityClass.immature;
-      case 1:
-        return MaturityClass.mature;
-      case 2:
-        return MaturityClass.overmature;
-      default:
-        return MaturityClass.unknown;
-    }
-  }
+  Detection toDetection(LetterboxTransform letterbox) => Detection(
+    boundingBox: letterbox.toNormalizedSource(modelSpaceBox),
+    maturityClass: maturityClasses[classIndex],
+    confidence: confidence,
+    mask: visualMask,
+  );
 }
 
 class _DebugCandidate {

@@ -23,50 +23,36 @@ The bundled model lives at:
 assets/model/model.tflite
 ```
 
-The app expects a YOLOv8 segmentation TFLite model with:
+The bundled FP32 model is `calabash_v8_mobilenetv3small_yolov8seg_final_fp32.tflite`.
+Its SHA-256 is
+`9d510908f7a512339654842712bc28952e5ff7fb7c6101c4646311217c7f6bc2`.
+The interpreter checks for these exact tensors at startup:
 
-- input: `[1, 3, 640, 640]` or `[1, 640, 640, 3] float32`
-- output 0: `[1, 39, 8400] float32`
-- mask prototypes: `[1, 32, 160, 160]` or `[1, 160, 160, 32] float32`
+- RGB input: `[1, 3, 224, 224]` (NCHW)
+- Detections: `[1, 39, 1029]`
+- Mask prototypes: `[1, 32, 56, 56]` (NCHW)
 
-The bundled model is `calabash_v7_mobilenetv3small_yolov8seg_final_fp32.tflite`
-(copied to `assets/model/model.tflite`). It uses channel-first input and
-prototypes. Its SHA-256 is
-`d0a6959c7859a1fc4190fbbcd8ab95cecdfd2390aea6b7f359a86f719f8f4563`.
-Android and iOS bundle this same asset through `pubspec.yaml`; live camera,
-capture, and gallery scans use the shared inference pipeline. Updating this
-asset applies the model weights to both platforms without separate model copies.
-The export still exposes only `Immature`, `Mature`, and `Overmature`, with no
-separate `Non-calabash` class. Non-calabash rejection means that no calabash
-detection survives the confidence and mask checks. Negative/background training
-examples do not require another app label; the export metadata does not record
-which training examples were used. Validate rejection on independent images and
-both devices before claiming reliable non-calabash filtering.
+Android and iOS bundle the same asset through `pubspec.yaml`. Live camera,
+capture, and gallery scans share the offline detector. The embedded model
+metadata and dataset YAML assign class IDs `0 = Immature`, `1 = Mature`, and
+`2 = Overmature`. Images are oriented before resizing, letterboxed to 224
+pixels with RGB 114 padding, and packed as planar RGB float32 divided by 255.
 
-Both live camera frames and capture/gallery images use the same `ModelService`, which
-reads the tensor signature to choose the correct layout. Images are letterboxed
-to 640x640 with fill 114, packed as RGB float32 / 255, and boxes are decoded
-from normalized coordinates. Prototype output order is identified by shape.
-The 39 detection channels remain 4 box values, 3 class scores, and 32 mask
-coefficients. Class-aware NMS removes duplicate predictions within the same
-stage. Near-identical boxes of different stages are also suppressed above
-0.85 IoU; other different-stage overlaps can remain. Only nonempty
-final masks are counted.
-The photo and live confidence thresholds are both 0.45; these
-conservative settings can miss small or difficult fruits and should be checked
-on independent phone images. Mask support requires at least four prototype
-pixels and 10% of the candidate crop, followed by validation after smoothing.
+Each candidate contains four normalized box values (center x/y, width/height),
+three class probabilities, and 32 mask coefficients. Both paths use the 0.45
+confidence threshold and same-class NMS at 0.60 IoU. The existing cross-class
+duplicate check suppresses near-identical boxes above 0.85 IoU. The decoder
+combines each kept candidate's coefficients with the prototypes, checks
+foreground support, and samples the cropped logits before thresholding. It
+removes padding and maps both the box and mask to the oriented image.
 
-Direct TFLite smoke testing produced fruit predictions at up to 97.7% confidence
-on the supplied field photo that the previous two models missed. Sampled
-Immature, Mature, and Overmature validation images also produced predictions;
-a blank image and a cucumber sample had no candidates above the 0.45 threshold.
-These checks confirm basic model behavior, not overall accuracy. More field
-photos and on-device validation are still required before the final defense.
+Measure the three-second processing target on physical devices using the
+Capture, Gallery and Live performance CSVs described below.
 
 For inspecting a candidate model outside Flutter, `tool/diagnose_model.py`
 reports actual tensor values, class scores, and image normalization. It needs
-Python with `ai-edge-litert`, `numpy`, and `Pillow` installed:
+Python with `numpy`, `Pillow`, `opencv-python-headless`, and either
+`ai-edge-litert` or `tensorflow` installed:
 
 ```text
 python tool/diagnose_model.py --model assets/model/model.tflite --image path/to/photo.jpg
@@ -124,8 +110,8 @@ Both paths use the same converter, respecting row padding and plane strides.
 Live results allow up to three seconds of processing, but reject camera frames
 that waited over 250 ms before inference. Overlay expiry adapts to the measured
 processing time (2 to 3.5 seconds), avoiding starvation on slower phones while
-still removing missing detections immediately. Capture/gallery thresholds and
-the 640x640 model are unchanged. Live uses the same base confidence threshold,
+still removing missing detections immediately. Live and photo scans share
+the bundled 224x224 hybrid model and the same base confidence threshold. Live
 requires two observations, and presents weaker matches as tentative labels.
 
 Channel-first mask prototypes are consumed directly without transposing the full
@@ -138,7 +124,7 @@ pages scroll for small screens and larger text, and page transitions respect
 the device's reduced-motion preference.
 
 Live capture uses the back camera with `ResolutionPreset.medium`, YUV420 image
-stream frames, and the existing 640x640 YOLOv8 segmentation model.
+stream frames, and the bundled 224x224 hybrid model.
 
 The preview requests 30 FPS (subject to camera support), while AI inference is
 limited to at most 10 starts per second and remains latest-frame-only. Mask
@@ -178,8 +164,8 @@ The `PerformanceProbe` flag/timer approach from
 the existing `ModelPipelineTimings` and live conversion timers are reused.
 No detector thresholds, model weights, or frame scheduling are changed. The
 Home screen adds an export action. With the flag disabled, no performance files or additional
-acquisition/queue timers are created. This measures the bundled YOLOv8n-seg
-TFLite graph, including its MobileNetV3Small backbone; the app does not run a
+acquisition/queue timers are created. This measures the bundled V8 hybrid
+TFLite graph, including its MobileNetV3-Small backbone; the app does not run a
 separate MobileNetV3 classifier stage.
 
 Home shows the enabled/disabled recording state and this launch's total and

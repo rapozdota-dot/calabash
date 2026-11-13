@@ -7,10 +7,7 @@ import plistlib
 import zipfile
 
 
-SUPPORTED_MODEL_ARCHITECTURES = (
-    'MobileNetV3Small_YOLOv8Seg_Architecture',
-    'YOLOv8n-seg',
-)
+MODEL_ARCHITECTURE = 'MobileNetV3Small_YOLOv8Seg_Architecture'
 
 
 def validate_model(path):
@@ -20,11 +17,10 @@ def validate_model(path):
     with zipfile.ZipFile(path) as archive:
         metadata = json.loads(archive.read('metadata.json'))
     expected = {'task': 'segment', 'head': 'Segment', 'batch': 1, 'channels': 3,
-                'imgsz': [640, 640],
+                'imgsz': [224, 224], 'end2end': False,
                 'names': {'0': 'Immature', '1': 'Mature', '2': 'Overmature'}}
     description = metadata.get('description', '')
-    if not isinstance(description, str) or not any(
-            architecture in description for architecture in SUPPORTED_MODEL_ARCHITECTURES):
+    if not isinstance(description, str) or MODEL_ARCHITECTURE not in description:
         raise ValueError('Unexpected model architecture metadata.')
     for field, value in expected.items():
         if metadata.get(field) != value:

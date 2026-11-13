@@ -64,7 +64,7 @@ void main() {
         );
         expect(find.text('CALABASH'), findsOneWidget);
         expect(find.text('MATURITY DETECTION'), findsOneWidget);
-        expect(find.text('POWERED BY YOLOv8n-seg'), findsOneWidget);
+        expect(find.text('POWERED BY HYBRID YOLOv8-seg'), findsOneWidget);
         expect(find.text('POWERED BY COMPUTER VISION'), findsNothing);
         expect(
           find.text('Intelligent Fruit Maturity Assessment'),
@@ -94,7 +94,9 @@ void main() {
 
     final title = tester.widget<Text>(find.text('CALABASH'));
     final subtitle = tester.widget<Text>(find.text('MATURITY DETECTION'));
-    final poweredBy = tester.widget<Text>(find.text('POWERED BY YOLOv8n-seg'));
+    final poweredBy = tester.widget<Text>(
+      find.text('POWERED BY HYBRID YOLOv8-seg'),
+    );
 
     expect(title.style?.fontWeight, FontWeight.w900);
     expect(subtitle.style?.fontWeight, FontWeight.w900);
