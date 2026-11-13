@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+      - codex/standalone-yolov8n-seg-224-release
   workflow_dispatch:
     inputs:
       publish_release:
@@ -109,6 +110,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
           name: ${{ env.RELEASE_NAME }}
           body: |
             Automated Android APK build for Calabash Maturity Detection.
