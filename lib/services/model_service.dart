@@ -133,9 +133,9 @@ class TfliteBackendBenchmark {
 class ModelService {
   static const int _classCount = 3;
   static const int _maskChannelCount = 32;
-  static const int _candidateCount = 8400;
-  static const int _protoHeight = 160;
-  static const int _protoWidth = 160;
+  static const int _candidateCount = 1029;
+  static const int _protoHeight = 56;
+  static const int _protoWidth = 56;
   static const int _protoPlaneSize = _protoHeight * _protoWidth;
   static const int _debugLogCount = 5;
   static const int _detectionChannelCount = 4 + _classCount + _maskChannelCount;
@@ -423,7 +423,7 @@ class ModelService {
   }
 
   /// Orchestrates letterbox -> TFLite -> candidates -> class-aware NMS -> masks -> UI detections.
-  /// Only surviving candidates reconstruct masks, avoiding expensive work for all 8400 anchors.
+  /// Only surviving candidates reconstruct masks, avoiding work for every anchor.
   ModelDetectionResult _detectFruitsFromDecodedImage(img.Image decodedImage) {
     final timings = _MutableModelPipelineTimings();
     final totalStopwatch = Stopwatch()..start();
@@ -511,7 +511,7 @@ class ModelService {
     );
   }
 
-  /// Fits the image proportionally inside 640x640 without stretching its fruit shapes.
+  /// Fits the image proportionally inside the model input without stretching fruit shapes.
   /// Centers the resized image in RGB-114 padding, writes normalized float32 RGB, and saves
   /// scale/padding metadata so both boxes and masks can be remapped to the original image.
   _PreprocessedImage _preprocessImage(
@@ -678,7 +678,7 @@ class ModelService {
     );
   }
 
-  /// Reads [1,39,8400] as 39 channel planes, not 8400 rows of 39 values.
+  /// Reads [1,39,1029] as 39 channel planes, not 1029 rows of 39 values.
   /// Channels 0-3 are xywh, 4-6 are the three class scores, and 7-38 are mask coefficients.
   /// Selects the best of classes 0-2, applies the confidence threshold, rejects invalid
   /// geometry/scores, and retains coefficients separately; there is no separate objectness channel.
@@ -820,7 +820,7 @@ class ModelService {
     return candidates;
   }
 
-  /// Converts this bundled export's normalized center-x/center-y/width/height to 640-space corners.
+  /// Converts normalized center-x/center-y/width/height to model-space corners.
   /// A replacement export must be verified before assuming it uses the same coordinate units.
   Rect _decodeModelSpaceBox({
     required double cx,
@@ -1027,8 +1027,8 @@ class ModelService {
   }
 
   /// Reads actual interpreter shapes and requires float32 input/output tensors.
-  /// Accepts 640x640 RGB in NCHW/NHWC, detections [1,39,8400], and 32 prototypes
-  /// at 160x160 in either layout; resolves output indices by shape, not assumed ordering.
+  /// Accepts 224x224 RGB in NCHW/NHWC, detections [1,39,1029], and 32 prototypes
+  /// at 56x56 in either layout; resolves output indices by shape, not assumed ordering.
   void _validateModelSignature() {
     if (_interpreter == null) {
       return;
@@ -1094,7 +1094,8 @@ class ModelService {
         'Unexpected output tensor shapes: '
         '${outputTensors.map((tensor) => tensor.shape).toList()}. '
         'Expected detection=$_expectedDetectionShape '
-        'and proto=[1,160,160,32] or [1,32,160,160].',
+        'and proto=[1,$_protoHeight,$_protoWidth,$_maskChannelCount] or '
+        '[1,$_maskChannelCount,$_protoHeight,$_protoWidth].',
       );
     }
 
@@ -1134,7 +1135,7 @@ class ModelService {
     }
   }
 
-  /// Prints a small confidence-ranked candidate sample rather than all 8400 anchors.
+  /// Prints a small confidence-ranked candidate sample rather than every anchor.
   void _logDebugCandidates({
     required String label,
     required List<_DebugCandidate> candidates,
@@ -1214,7 +1215,7 @@ class ModelService {
     return shape.fold<int>(1, (product, value) => product * value);
   }
 
-  /// Reads a channel-first anchor value at channel * 8400 + anchor with bounds guards.
+  /// Reads a channel-first value at channel * anchor count + anchor with bounds guards.
   /// Using anchor * 39 + channel here would mix coordinates, class scores, and mask coefficients.
   double _detectionValueAt(
     Float32List detectionOutput, {
