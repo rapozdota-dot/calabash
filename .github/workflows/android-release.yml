@@ -31,7 +31,7 @@ concurrency:
 jobs:
   build-apk:
     name: Build release APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
@@ -60,6 +60,8 @@ jobs:
         run: flutter test
 
       - name: Build release APK
+        env:
+          GRADLE_OPTS: -Dorg.gradle.vfs.watch=false
         run: flutter build apk --release --build-number=${{ github.run_number }}
 
       - name: Prepare APK asset
@@ -68,6 +70,7 @@ jobs:
           apk_name="calabash-maturity-detection-${safe_ref}-${GITHUB_RUN_NUMBER}.apk"
           mkdir -p release
           test -f build/app/outputs/flutter-apk/app-release.apk
+          cmp assets/model/model.tflite <(unzip -p build/app/outputs/flutter-apk/app-release.apk assets/flutter_assets/assets/model/model.tflite)
           cp build/app/outputs/flutter-apk/app-release.apk "release/${apk_name}"
           echo "APK_NAME=${apk_name}" >> "${GITHUB_ENV}"
           ls -lh release
